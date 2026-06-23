@@ -738,7 +738,7 @@ def main():
         X_test  = sp_decimate(X_test.astype( np.float64), q=f, axis=1, zero_phase=True).astype(np.float32)
         cfg["seq_len"] = X_train.shape[1]   # use actual post-decimate length
         cfg["fs"]      = FS // f
-        print(f"Downsampled {f}× → {cfg['fs']} Hz  seq_len={cfg['seq_len']}")
+        print(f"Downsampled {f}x -> {cfg['fs']} Hz  seq_len={cfg['seq_len']}")
 
     print(f"X_train {X_train.shape}  X_val {X_val.shape}  X_test {X_test.shape}")
 
