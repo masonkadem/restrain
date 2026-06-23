@@ -1,13 +1,8 @@
 name: Experiment Sweep
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - train.py
-      - run_experiments.sh
-
-  # Also lets you trigger manually from the GitHub Actions tab
+  # Manual trigger only — training is long-running and should not auto-start on push.
+  # Go to GitHub → Actions → "Experiment Sweep" → Run workflow to start.
   workflow_dispatch:
 
 jobs:

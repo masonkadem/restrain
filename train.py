@@ -248,7 +248,7 @@ def train_deep(model, train_loader, val_loader, test_loader, cfg, run_name, devi
             elapsed = (time.time() - train_start) / 60
             print(f"[{run_name}] ep {epoch+1:3d}/{cfg['epochs']} | "
                   f"loss={avg_loss:.4f} | gnorm={avg_gnorm:.3f} | "
-                  f"MAE SBP={m['mae_sbp']:.2f} DBP={m['mae_dbp']:.2f} mmHg | "
+                  f"MAE SBP={val_m['mae_sbp']:.2f} DBP={val_m['mae_dbp']:.2f} mmHg | "
                   f"{epoch_time:.1f}s/ep | {elapsed:.1f}min elapsed")
 
     total_time = time.time() - train_start
@@ -543,8 +543,9 @@ def get_features(X, channels, cfg, split_name):
     ch_tag    = "_".join(channels)
     cache_dir = os.path.join(cfg["data_root"], "features")
     os.makedirs(cache_dir, exist_ok=True)
+    ds_tag     = f"_ds{cfg.get('downsample', 1)}" if cfg.get("downsample", 1) > 1 else ""
     cache_path = os.path.join(cache_dir,
-                              f"{split_name}_{ch_tag}_seq{cfg['seq_len']}_v2.npy")
+                              f"{split_name}_{ch_tag}_seq{cfg['seq_len']}{ds_tag}_v2.npy")
     if os.path.exists(cache_path):
         F = np.load(cache_path)
         print(f"  Loaded cached features: {os.path.basename(cache_path)}  {F.shape}")
@@ -658,6 +659,8 @@ def main():
     parser.add_argument("--n_layers",     type=int,   default=None)
     parser.add_argument("--lr",           type=float, default=3e-4)
     parser.add_argument("--seed",         type=int,   default=42)
+    parser.add_argument("--downsample",   type=int,   default=1, metavar="F",
+                        help="Downsample factor applied after loading (e.g. 5 for 125→25 Hz)")
     parser.add_argument("--wandb_project", default="bp-estimation")
     parser.add_argument("--data_root",    default=_ROOT)
     args = parser.parse_args()
@@ -693,6 +696,7 @@ def main():
         "warmup_epochs":     max(1, epochs // 10),
         "lgbm_n_estimators": 50  if args.smoke else 2000,
         "lgbm_lr":           0.1 if args.smoke else 0.03,
+        "downsample":        args.downsample,
         "wandb_project":     args.wandb_project,
         "wandb_entity":      None,
     }
@@ -725,6 +729,17 @@ def main():
     X_train, y_train = train_sig, train_lbl
     X_val,   y_val   = val_sig,   val_lbl
     X_test,  y_test  = test_sig,  test_lbl
+
+    if args.downsample > 1:
+        from scipy.signal import decimate as sp_decimate
+        f = args.downsample
+        X_train = sp_decimate(X_train.astype(np.float64), q=f, axis=1, zero_phase=True).astype(np.float32)
+        X_val   = sp_decimate(X_val.astype(  np.float64), q=f, axis=1, zero_phase=True).astype(np.float32)
+        X_test  = sp_decimate(X_test.astype( np.float64), q=f, axis=1, zero_phase=True).astype(np.float32)
+        cfg["seq_len"] = X_train.shape[1]   # use actual post-decimate length
+        cfg["fs"]      = FS // f
+        print(f"Downsampled {f}× → {cfg['fs']} Hz  seq_len={cfg['seq_len']}")
+
     print(f"X_train {X_train.shape}  X_val {X_val.shape}  X_test {X_test.shape}")
 
     if args.model == "lgbm":
@@ -739,12 +754,13 @@ def main():
         train_loader, val_loader, test_loader, n_ch = make_loaders(
             X_train, y_train, X_val, y_val, X_test, y_test, channels, cfg)
 
+        active_seq_len = cfg["seq_len"]   # reflects downsample if applied
         if args.model == "transformer":
-            model = BPTransformer(n_ch, d_model, n_heads, n_layers, seq_len, 0.1).to(device)
+            model = BPTransformer(n_ch, d_model, n_heads, n_layers, active_seq_len, 0.1).to(device)
         elif args.model == "dual_stream":
-            model = BPDualStreamTransformer(d_model, n_heads, n_layers, seq_len, 0.1).to(device)
+            model = BPDualStreamTransformer(d_model, n_heads, n_layers, active_seq_len, 0.1).to(device)
         elif args.model == "tri_stream":
-            model = BPTriStreamTransformer(d_model, n_heads, n_layers, seq_len, 0.1).to(device)
+            model = BPTriStreamTransformer(d_model, n_heads, n_layers, active_seq_len, 0.1).to(device)
         elif args.model == "s4":
             model = BPS4(n_ch, d_model, cfg["d_state"], n_layers, 0.1).to(device)
 

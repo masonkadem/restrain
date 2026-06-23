@@ -1,137 +1,103 @@
 #!/usr/bin/env bash
-# run_experiments.sh — sweep all model × channel permutations
+# run_experiments.sh — 25 Hz sweep focused on dual/tri/S4 for BP estimation
 #
 # Usage:
-#   bash run_experiments.sh
-#   bash run_experiments.sh --epochs 40      # override epochs for quick tests
-#   CUDA_DEVICE=1 bash run_experiments.sh    # target a specific GPU index
+#   bash run_experiments.sh                    # full sweep
+#   CUDA_DEVICE=1 bash run_experiments.sh      # target GPU 1
+#   bash run_experiments.sh --epochs 10        # quick test
 #
-# Outputs:
-#   Each run saves a <model>_<channels>_best.pt checkpoint.
-#   All runs are logged to W&B project "bp-estimation".
+# Sampling: loaded at 125 Hz → decimated to 25 Hz (--downsample 5).
+# At 25 Hz seq_len=375 — batch=32 works for all models including dual/tri stream.
 
-set -uo pipefail   # no -e: a single failed run logs and continues
+set -uo pipefail   # no -e: single failure logs and continues
 
-# ── Defaults (can be overridden on the command line) ─────────────────────────
-GPU_PROFILE="3080"   # fast | 3080 | h100
-CUDA_DEVICE="0"      # which GPU index to use (CUDA_VISIBLE_DEVICES)
+GPU_PROFILE="3080"
+DOWNSAMPLE=5        # 125 → 25 Hz
+CUDA_DEVICE="0"
 SEED=42
 DATA_ROOT="$(cd "$(dirname "$0")" && pwd)"
 WANDB_PROJECT="bp-estimation"
-
-# Forward any extra flags to all runs (e.g. --epochs 50 --lr 1e-4)
 EXTRA="$*"
 
-# Help PyTorch handle fragmented VRAM between sequential runs
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-# Activate conda env if not already active
 if [[ "${CONDA_DEFAULT_ENV:-}" != "bp" ]]; then
     source "$(conda info --base)/etc/profile.d/conda.sh"
     conda activate bp
 fi
 
-# ── Channel sets ─────────────────────────────────────────────────────────────
-CHANNEL_SETS=(
-    "ppg"
-    "ppg,ecg"
-    "ppg,resp"
-    "ppg,ecg,resp"
-)
-
-# ── Models ───────────────────────────────────────────────────────────────────
-# dual_stream only runs with ppg,ecg — enforced in the loop below.
-# tri_stream only runs with ppg,ecg,resp — enforced in the loop below.
-MODELS=(transformer dual_stream tri_stream s4 lgbm)
-
-# ── Per-model batch size overrides (dual/tri have 2-3× more activation memory)
-declare -A BATCH_OVERRIDE
-BATCH_OVERRIDE[dual_stream]=8
-BATCH_OVERRIDE[tri_stream]=8
-
-# ── Utilities ─────────────────────────────────────────────────────────────────
 PYTHON="${PYTHON:-python}"
 LOG_DIR="${DATA_ROOT}/logs"
 mkdir -p "$LOG_DIR"
 
-# Returns 0 if this run already has a real (non-smoke) result saved.
-# Uses grep so Git Bash paths work without needing Python path conversion.
+# Ordered by priority: dual/tri stream and S4 first, then transformer/lgbm baselines.
+# Format: "model  channels"
+EXPERIMENTS=(
+    "dual_stream  ppg,ecg"
+    "tri_stream   ppg,ecg,resp"
+    "s4           ppg,ecg"
+    "s4           ppg,ecg,resp"
+    "s4           ppg"
+    "transformer  ppg"
+    "transformer  ppg,ecg,resp"
+    "lgbm         ppg,ecg"
+    "lgbm         ppg,ecg,resp"
+)
+
+# Returns 0 if a 25 Hz result (downsample=5) already exists for this run.
 already_done() {
-    local model="$1"
-    local channels="$2"
-    local name_tag="${model}_${channels//,/_}"   # matches train.py run_name
+    local model="$1" channels="$2"
+    local name_tag="${model}_${channels//,/_}"
 
     if [[ "$model" == "lgbm" ]]; then
         local json="${DATA_ROOT}/results/${name_tag}_sbp_best.json"
-        [[ -f "$json" ]] && grep -q '"n_estimators": 2000' "$json" 2>/dev/null
+        [[ -f "$json" ]] && grep -q '"downsample": 5' "$json" 2>/dev/null
     else
         local json="${DATA_ROOT}/results/${name_tag}_best.json"
-        [[ -f "$json" ]] && grep -q '"epochs": 100' "$json" 2>/dev/null
+        [[ -f "$json" ]] && grep -q '"downsample": 5' "$json" 2>/dev/null
     fi
 }
 
 run_experiment() {
-    local model="$1"
-    local channels="$2"
+    local model="$1" channels="$2"
     local tag="${model}__${channels//,/_}"
     local log_file="${LOG_DIR}/${tag}.log"
-    local batch_flag=""
-
-    if [[ -n "${BATCH_OVERRIDE[$model]+x}" ]]; then
-        batch_flag="--batch_size ${BATCH_OVERRIDE[$model]}"
-    fi
 
     echo "------------------------------------------------------------"
-    echo "  START  model=${model}  channels=${channels}${batch_flag:+  (batch override: ${BATCH_OVERRIDE[$model]})}"
+    echo "  START  model=${model}  channels=${channels}  (25 Hz, batch=32)"
     echo "  log -> ${log_file}"
     echo "------------------------------------------------------------"
 
     CUDA_VISIBLE_DEVICES="$CUDA_DEVICE" "$PYTHON" "${DATA_ROOT}/train.py" \
-        --model        "$model"          \
-        --channels     "$channels"       \
-        --gpu_profile  "$GPU_PROFILE"    \
-        --seed         "$SEED"           \
-        --wandb_project "$WANDB_PROJECT" \
-        --data_root    "$DATA_ROOT"      \
-        $batch_flag                      \
+        --model         "$model"          \
+        --channels      "$channels"       \
+        --gpu_profile   "$GPU_PROFILE"    \
+        --downsample    "$DOWNSAMPLE"     \
+        --seed          "$SEED"           \
+        --wandb_project "$WANDB_PROJECT"  \
+        --data_root     "$DATA_ROOT"      \
         $EXTRA \
         2>&1 | tee "$log_file" \
     && echo "  DONE   model=${model}  channels=${channels}" \
     || echo "  FAILED model=${model}  channels=${channels}  (see ${log_file})"
 }
 
-# ── Main sweep ────────────────────────────────────────────────────────────────
 echo "============================================================"
-echo "  BP estimation experiment sweep"
-echo "  GPU profile: ${GPU_PROFILE}"
+echo "  BP estimation sweep  |  25 Hz  |  GPU profile: ${GPU_PROFILE}"
 echo "============================================================"
 
-for model in "${MODELS[@]}"; do
-    for channels in "${CHANNEL_SETS[@]}"; do
+for entry in "${EXPERIMENTS[@]}"; do
+    read -r model channels <<< "$entry"
 
-        # dual_stream requires exactly ppg,ecg
-        if [[ "$model" == "dual_stream" && "$channels" != "ppg,ecg" ]]; then
-            echo "  SKIP   model=dual_stream  channels=${channels}  (requires ppg,ecg)"
-            continue
-        fi
+    if already_done "$model" "$channels"; then
+        echo "  SKIP   model=${model}  channels=${channels}  (25 Hz result exists)"
+        continue
+    fi
 
-        # tri_stream requires exactly ppg,ecg,resp
-        if [[ "$model" == "tri_stream" && "$channels" != "ppg,ecg,resp" ]]; then
-            echo "  SKIP   model=tri_stream  channels=${channels}  (requires ppg,ecg,resp)"
-            continue
-        fi
-
-        # Skip runs that already have a real (non-smoke) result
-        if already_done "$model" "$channels"; then
-            echo "  SKIP   model=${model}  channels=${channels}  (already completed)"
-            continue
-        fi
-
-        run_experiment "$model" "$channels"
-    done
+    run_experiment "$model" "$channels"
 done
 
 echo ""
 echo "============================================================"
-echo "  All experiments complete. Logs in: ${LOG_DIR}/"
+echo "  Sweep complete. Logs in: ${LOG_DIR}/"
 echo "============================================================"
