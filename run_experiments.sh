@@ -20,6 +20,7 @@ WANDB_PROJECT="bp-estimation"
 EXTRA="$*"
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTHONIOENCODING=utf-8    # prevent cp1252 errors with torchinfo/wandb on Windows
 
 if [[ "${CONDA_DEFAULT_ENV:-}" != "bp" ]]; then
     source "$(conda info --base)/etc/profile.d/conda.sh"
