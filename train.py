@@ -20,6 +20,11 @@ Each run saves  <run_name>_best.pt  and  <run_name>_best.json  alongside.
 """
 
 import argparse, json, os, math, random, time, warnings
+try:
+    from torchinfo import summary as torch_summary
+    TORCHINFO_AVAILABLE = True
+except ImportError:
+    TORCHINFO_AVAILABLE = False
 import numpy as np
 from scipy import stats
 from scipy.signal import welch, find_peaks
@@ -180,6 +185,18 @@ def train_deep(model, train_loader, test_loader, cfg, run_name, device):
                          name=run_name,
                          config={**wb_cfg, "model": run_name, "n_params": n_params},
                          reinit=True)
+
+    if TORCHINFO_AVAILABLE:
+        # infer input shape from first batch of train_loader
+        sample_x, _ = next(iter(train_loader))
+        arch_summary = torch_summary(
+            model, input_data=sample_x[:1].to(next(model.parameters()).device),
+            col_names=["input_size", "output_size", "num_params", "trainable"],
+            verbose=0)
+        print(arch_summary)
+        if use_wb and run:
+            wandb.log({"architecture": wandb.Html(
+                f"<pre>{arch_summary}</pre>")}, commit=False)
 
     best_mae, best_w, best_epoch = float("inf"), None, 0
     train_start = time.time()
