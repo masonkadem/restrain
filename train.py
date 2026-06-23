@@ -206,17 +206,18 @@ def train_deep(model, train_loader, test_loader, cfg, run_name, device):
 
         if use_wb and run:
             wandb.log({
-                "epoch":             epoch,
-                "train/loss":        avg_loss,
-                "train/grad_norm":   avg_gnorm,
-                "train/lr":          lr,
-                "val/mae_sbp":       m["mae_sbp"],
-                "val/mae_dbp":       m["mae_dbp"],
-                "val/mae_mean":      avg_mae,
-                "val/rmse_sbp":      m["rmse_sbp"],
-                "val/rmse_dbp":      m["rmse_dbp"],
-                "perf/epoch_time_s": epoch_time,
-                "perf/elapsed_min":  (time.time() - train_start) / 60,
+                "epoch":              epoch,
+                # loss/* all land on the same W&B chart — train & test superimposed
+                "loss/train":         avg_loss,
+                "loss/test_sbp":      m["mae_sbp"],
+                "loss/test_dbp":      m["mae_dbp"],
+                "loss/test_mean":     avg_mae,
+                "test/rmse_sbp":      m["rmse_sbp"],
+                "test/rmse_dbp":      m["rmse_dbp"],
+                "train/grad_norm":    avg_gnorm,
+                "train/lr":           lr,
+                "perf/epoch_time_s":  epoch_time,
+                "perf/elapsed_min":   (time.time() - train_start) / 60,
             })
 
         if avg_mae < best_mae:
@@ -241,10 +242,10 @@ def train_deep(model, train_loader, test_loader, cfg, run_name, device):
                             "total_train_time_min": round(total_time / 60, 2)})
     if use_wb and run:
         run.summary.update({
-            "best/mae_sbp":         final["mae_sbp"],
-            "best/mae_dbp":         final["mae_dbp"],
-            "best/rmse_sbp":        final["rmse_sbp"],
-            "best/rmse_dbp":        final["rmse_dbp"],
+            "best/test_mae_sbp":    final["mae_sbp"],
+            "best/test_mae_dbp":    final["mae_dbp"],
+            "best/test_rmse_sbp":   final["rmse_sbp"],
+            "best/test_rmse_dbp":   final["rmse_dbp"],
             "best/epoch":           best_epoch,
             "n_params":             n_params,
             "total_train_time_s":   total_time,
