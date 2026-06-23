@@ -116,16 +116,17 @@ class BPDataset(Dataset):
     def __getitem__(self, i): return self.X[i], self.y[i]
 
 
-def make_loaders(X_tr, y_tr, X_te, y_te, channels, cfg):
-    ch_idx   = [CHANNEL_MAP[c] for c in channels]
-    X_tr_sel = np.ascontiguousarray(X_tr[:, :, ch_idx])
-    X_te_sel = np.ascontiguousarray(X_te[:, :, ch_idx])
+def make_loaders(X_tr, y_tr, X_va, y_va, X_te, y_te, channels, cfg):
+    ch_idx = [CHANNEL_MAP[c] for c in channels]
+    sel    = lambda X: np.ascontiguousarray(X[:, :, ch_idx])
     g = torch.Generator(); g.manual_seed(cfg["seed"])
-    tr = DataLoader(BPDataset(X_tr_sel, y_tr), cfg["batch_size"],
+    tr = DataLoader(BPDataset(sel(X_tr), y_tr), cfg["batch_size"],
                     shuffle=True,  num_workers=0, generator=g)
-    te = DataLoader(BPDataset(X_te_sel, y_te), cfg["batch_size"],
+    va = DataLoader(BPDataset(sel(X_va), y_va), cfg["batch_size"],
                     shuffle=False, num_workers=0)
-    return tr, te, len(ch_idx)
+    te = DataLoader(BPDataset(sel(X_te), y_te), cfg["batch_size"],
+                    shuffle=False, num_workers=0)
+    return tr, va, te, len(ch_idx)
 
 
 def cosine_lr(opt, epoch, total, warmup, base_lr):
@@ -171,7 +172,7 @@ def _save_checkpoint(name, weights, cfg, metrics, n_params, extra=None):
         json.dump(meta, fh, indent=2)
 
 
-def train_deep(model, train_loader, test_loader, cfg, run_name, device):
+def train_deep(model, train_loader, val_loader, test_loader, cfg, run_name, device):
     seed_everything(cfg["seed"])
     opt      = torch.optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=1e-4)
     loss_fn  = nn.L1Loss()
@@ -216,31 +217,31 @@ def train_deep(model, train_loader, test_loader, cfg, run_name, device):
             total_loss += loss.item(); total_gnorm += gnorm.item(); n_batches += 1
 
         epoch_time = time.time() - epoch_start
-        m          = evaluate(model, test_loader, device)
+        val_m      = evaluate(model, val_loader,  device)
         avg_loss   = total_loss  / n_batches
         avg_gnorm  = total_gnorm / n_batches
-        avg_mae    = (m["mae_sbp"] + m["mae_dbp"]) / 2
+        val_mae    = (val_m["mae_sbp"] + val_m["mae_dbp"]) / 2
 
         if use_wb and run:
             wandb.log({
-                "epoch":              epoch,
-                # loss/* all land on the same W&B chart — train & test superimposed
-                "loss/train":         avg_loss,
-                "loss/test_sbp":      m["mae_sbp"],
-                "loss/test_dbp":      m["mae_dbp"],
-                "loss/test_mean":     avg_mae,
-                "test/rmse_sbp":      m["rmse_sbp"],
-                "test/rmse_dbp":      m["rmse_dbp"],
-                "train/grad_norm":    avg_gnorm,
-                "train/lr":           lr,
-                "perf/epoch_time_s":  epoch_time,
-                "perf/elapsed_min":   (time.time() - train_start) / 60,
+                "epoch":             epoch,
+                # loss/* superimposed: train MAE vs val MAE on one chart
+                "loss/train":        avg_loss,
+                "loss/val_sbp":      val_m["mae_sbp"],
+                "loss/val_dbp":      val_m["mae_dbp"],
+                "loss/val_mean":     val_mae,
+                "val/rmse_sbp":      val_m["rmse_sbp"],
+                "val/rmse_dbp":      val_m["rmse_dbp"],
+                "train/grad_norm":   avg_gnorm,
+                "train/lr":          lr,
+                "perf/epoch_time_s": epoch_time,
+                "perf/elapsed_min":  (time.time() - train_start) / 60,
             })
 
-        if avg_mae < best_mae:
-            best_mae = avg_mae; best_epoch = epoch
+        if val_mae < best_mae:
+            best_mae = val_mae; best_epoch = epoch
             best_w   = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-            _save_checkpoint(run_name, best_w, cfg, m, n_params,
+            _save_checkpoint(run_name, best_w, cfg, val_m, n_params,
                              extra={"best_epoch": best_epoch})
 
         if (epoch + 1) % max(1, cfg["epochs"] // 10) == 0:
@@ -252,17 +253,23 @@ def train_deep(model, train_loader, test_loader, cfg, run_name, device):
 
     total_time = time.time() - train_start
     model.load_state_dict(best_w)
-    final = evaluate(model, test_loader, device)
-    _save_checkpoint(run_name, best_w, cfg, final, n_params,
+    val_final  = evaluate(model, val_loader,  device)
+    test_final = evaluate(model, test_loader, device)
+    _save_checkpoint(run_name, best_w, cfg,
+                     {"val_" + k: v for k, v in val_final.items()} |
+                     {"test_" + k: v for k, v in test_final.items()},
+                     n_params,
                      extra={"best_epoch": best_epoch,
-                            "total_train_time_s": round(total_time, 1),
+                            "total_train_time_s":  round(total_time, 1),
                             "total_train_time_min": round(total_time / 60, 2)})
     if use_wb and run:
         run.summary.update({
-            "best/test_mae_sbp":    final["mae_sbp"],
-            "best/test_mae_dbp":    final["mae_dbp"],
-            "best/test_rmse_sbp":   final["rmse_sbp"],
-            "best/test_rmse_dbp":   final["rmse_dbp"],
+            "best/val_mae_sbp":     val_final["mae_sbp"],
+            "best/val_mae_dbp":     val_final["mae_dbp"],
+            "best/test_mae_sbp":    test_final["mae_sbp"],
+            "best/test_mae_dbp":    test_final["mae_dbp"],
+            "best/test_rmse_sbp":   test_final["rmse_sbp"],
+            "best/test_rmse_dbp":   test_final["rmse_dbp"],
             "best/epoch":           best_epoch,
             "n_params":             n_params,
             "total_train_time_s":   total_time,
@@ -270,9 +277,10 @@ def train_deep(model, train_loader, test_loader, cfg, run_name, device):
         })
         run.finish()
     print(f"[{run_name}] Done — {total_time/60:.1f} min | best epoch {best_epoch+1} | "
-          f"MAE SBP={final['mae_sbp']:.2f}  DBP={final['mae_dbp']:.2f} mmHg  "
-          f"({n_params:,} params)  -> {run_name}_best.pt / .json")
-    return final
+          f"val MAE SBP={val_final['mae_sbp']:.2f}  DBP={val_final['mae_dbp']:.2f} | "
+          f"test MAE SBP={test_final['mae_sbp']:.2f}  DBP={test_final['mae_dbp']:.2f} mmHg  "
+          f"({n_params:,} params)")
+    return test_final
 
 
 # ── Model definitions ─────────────────────────────────────────────────────────
@@ -548,7 +556,7 @@ def get_features(X, channels, cfg, split_name):
     return F
 
 
-def train_lgbm(F_tr, y_tr, F_te, y_te, cfg, run_name, channels=None):
+def train_lgbm(F_tr, y_tr, F_va, y_va, F_te, y_te, cfg, run_name, channels=None):
     use_wb     = WANDB_AVAILABLE and bool(os.environ.get("WANDB_API_KEY"))
     results    = {}
     feat_names = _feature_names(channels) if channels else None
@@ -570,15 +578,15 @@ def train_lgbm(F_tr, y_tr, F_te, y_te, cfg, run_name, channels=None):
             max_depth=7, num_leaves=63, subsample=0.8,
             colsample_bytree=0.8, random_state=cfg["seed"], verbose=-1)
         m.fit(F_tr, y_tr[:, target_idx],
-              eval_set=[(F_tr, y_tr[:, target_idx]), (F_te, y_te[:, target_idx])],
-              eval_names=["train", "test"],
+              eval_set=[(F_tr, y_tr[:, target_idx]), (F_va, y_va[:, target_idx])],
+              eval_names=["train", "val"],
               callbacks=[lgb.early_stopping(50, verbose=False),
                          lgb.log_evaluation(100),
                          lgb.record_evaluation(evals_result)])
-        train_time = time.time() - t0
-        preds      = m.predict(F_te)
-        mae        = mean_absolute_error(y_te[:, target_idx], preds)
-        rmse       = mean_squared_error(y_te[:, target_idx],  preds) ** 0.5
+        train_time  = time.time() - t0
+        preds_te    = m.predict(F_te)
+        mae         = mean_absolute_error(y_te[:, target_idx], preds_te)
+        rmse        = mean_squared_error(y_te[:, target_idx],  preds_te) ** 0.5
         best_iter  = m.best_iteration_ or cfg["lgbm_n_estimators"]
 
         fnames     = feat_names or [f"f{i}" for i in range(len(m.feature_importances_))]
@@ -592,7 +600,7 @@ def train_lgbm(F_tr, y_tr, F_te, y_te, cfg, run_name, channels=None):
                             "subsample": 0.8, "colsample_bytree": 0.8,
                             "best_iteration": best_iter},
             "data": {"channels": channels or [], "n_features": len(fnames),
-                     "n_train": len(F_tr), "n_test": len(F_te),
+                     "n_train": len(F_tr), "n_val": len(F_va), "n_test": len(F_te),
                      "seq_len": cfg.get("seq_len")},
             "metrics": {"mae": float(mae), "rmse": float(rmse)},
             "train_time_s": round(train_time, 1),
@@ -606,11 +614,11 @@ def train_lgbm(F_tr, y_tr, F_te, y_te, cfg, run_name, channels=None):
 
         if use_wb and run:
             tr_l1 = evals_result.get("train", {}).get("l1", [])
-            te_l1 = evals_result.get("test",  {}).get("l1", [])
-            for rnd, (tr, te) in enumerate(zip(tr_l1, te_l1)):
-                wandb.log({f"lgbm_{target_name}/round": rnd,
+            va_l1 = evals_result.get("val",   {}).get("l1", [])
+            for rnd, (tr, va) in enumerate(zip(tr_l1, va_l1)):
+                wandb.log({f"lgbm_{target_name}/round":     rnd,
                            f"lgbm_{target_name}/train_mae": tr,
-                           f"lgbm_{target_name}/test_mae":  te}, step=rnd)
+                           f"lgbm_{target_name}/val_mae":   va}, step=rnd)
             imp_table = wandb.Table(columns=["feature", "importance"],
                                     data=[[f, v] for f, v in imp_sorted[:30]])
             wandb.log({f"lgbm_{target_name}/feature_importance":
@@ -714,21 +722,22 @@ def main():
     val_sig,   val_lbl   = extract_segments(val_sub,   root, seq_len, seg_start)
     test_sig,  test_lbl  = extract_segments(test_sub,  root, seq_len, seg_start)
 
-    X_train = np.concatenate([train_sig, val_sig], axis=0)
-    y_train = np.concatenate([train_lbl, val_lbl], axis=0)
-    X_test, y_test = test_sig, test_lbl
-    print(f"X_train {X_train.shape}  X_test {X_test.shape}")
+    X_train, y_train = train_sig, train_lbl
+    X_val,   y_val   = val_sig,   val_lbl
+    X_test,  y_test  = test_sig,  test_lbl
+    print(f"X_train {X_train.shape}  X_val {X_val.shape}  X_test {X_test.shape}")
 
     if args.model == "lgbm":
         F_train = get_features(X_train, channels, cfg, "train")
+        F_val   = get_features(X_val,   channels, cfg, "val")
         F_test  = get_features(X_test,  channels, cfg, "test")
-        metrics = train_lgbm(F_train, y_train, F_test, y_test, cfg, run_name,
-                             channels=channels)
+        metrics = train_lgbm(F_train, y_train, F_val, y_val, F_test, y_test,
+                             cfg, run_name, channels=channels)
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Device: {device}")
-        train_loader, test_loader, n_ch = make_loaders(
-            X_train, y_train, X_test, y_test, channels, cfg)
+        train_loader, val_loader, test_loader, n_ch = make_loaders(
+            X_train, y_train, X_val, y_val, X_test, y_test, channels, cfg)
 
         if args.model == "transformer":
             model = BPTransformer(n_ch, d_model, n_heads, n_layers, seq_len, 0.1).to(device)
@@ -740,7 +749,7 @@ def main():
             model = BPS4(n_ch, d_model, cfg["d_state"], n_layers, 0.1).to(device)
 
         print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
-        metrics = train_deep(model, train_loader, test_loader, cfg, run_name, device)
+        metrics = train_deep(model, train_loader, val_loader, test_loader, cfg, run_name, device)
 
     print(f"\nResults [{run_name}]:")
     for k, v in metrics.items():
