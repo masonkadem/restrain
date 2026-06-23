@@ -1,0 +1,49 @@
+name: Experiment Sweep
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - train.py
+      - run_experiments.sh
+
+  # Also lets you trigger manually from the GitHub Actions tab
+  workflow_dispatch:
+
+jobs:
+  train:
+    runs-on: self-hosted   # your RTX 3080 machine
+    timeout-minutes: 10000 # ~7 days max, covers any full sweep
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Need full history so we can push back results
+          fetch-depth: 0
+
+      - name: Add conda to PATH
+        run: echo "$CONDA_ROOT/Scripts" >> $GITHUB_PATH
+
+      - name: Run experiment sweep
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+        run: bash run_experiments.sh
+
+      - name: Commit results back to repo
+        if: always()   # commit whatever finished, even if sweep partially failed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add results/*.json || true
+          if git diff --cached --quiet; then
+            echo "No new results to commit."
+          else
+            git commit -m "sweep results [skip ci]"
+            git push
+          fi
