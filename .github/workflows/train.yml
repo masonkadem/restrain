@@ -1,12 +1,19 @@
 name: Experiment Sweep
 
 on:
-  # Manual trigger only — training is long-running and should not auto-start on push.
-  # Go to GitHub → Actions → "Experiment Sweep" → Run workflow to start.
+  # Manual trigger from GitHub Actions UI.
   workflow_dispatch:
+  # OR: include [train] in your commit message to trigger from a push.
+  # Normal pushes (without [train]) only run the lightweight CI arch check.
+  push:
+    branches: [main]
+    paths:
+      - train.py
+      - run_experiments.sh
 
 jobs:
   train:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[train]')
     runs-on: self-hosted   # your RTX 3080 machine
     timeout-minutes: 10000 # ~7 days max, covers any full sweep
 
