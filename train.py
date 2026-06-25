@@ -34,6 +34,13 @@ try:
     SHAP_AVAILABLE = True
 except ImportError:
     SHAP_AVAILABLE = False
+
+try:
+    import optuna
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    OPTUNA_AVAILABLE = True
+except ImportError:
+    OPTUNA_AVAILABLE = False
 import numpy as np
 from scipy import stats
 from scipy.signal import welch, find_peaks
@@ -508,11 +515,17 @@ except AttributeError:
     _TRAPZ = np.trapz       # NumPy < 2.0
 
 _FEATS_PER_CH = [
+    # statistical
     "mean", "std", "skew", "kurt", "min", "max", "median", "rms",
-    "psd_total", "psd_low", "peak_freq",
+    # spectral — total + HRV-relevant bands (VLF/LF/HF) + peak frequency
+    "psd_total", "psd_vlf", "psd_lf", "psd_hf", "lf_hf_ratio", "peak_freq",
+    # fractal complexity
     "higuchi_fd", "petrosian_fd",
+    # peak morphology
     "peak_rate", "ipi_mean", "ipi_std", "ipi_rmssd", "rise_time",
-]
+    # amplitude
+    "pulse_amp",          # peak-to-peak; direct hemodynamic indicator
+]  # 22 features per channel
 _FEATS_CROSS = ["ptt_mean", "ptt_std", "ptt_cv"]
 
 
@@ -607,17 +620,26 @@ def extract_features(X, fs=FS, channels=None):
         for ci in range(C):
             s    = X[i, :, ci]
             f, p = welch(s, fs=fs, nperseg=min(256, L))
+            # spectral bands aligned with HRV standard (Task Force 1996)
+            m_vlf = (f >= 0.003) & (f < 0.04)
+            m_lf  = (f >= 0.04)  & (f < 0.15)
+            m_hf  = (f >= 0.15)  & (f < 0.4)
+            psd_lf  = float(_TRAPZ(p[m_lf], f[m_lf])) if m_lf.any() else 0.0
+            psd_hf  = float(_TRAPZ(p[m_hf], f[m_hf])) if m_hf.any() else 0.0
             row += [
                 float(s.mean()), float(s.std()),
                 float(stats.skew(s)), float(stats.kurtosis(s)),
                 float(s.min()), float(s.max()),
                 float(np.median(s)), float(np.sqrt(np.mean(s ** 2))),
                 float(_TRAPZ(p, f)),
-                float(_TRAPZ(p[f < 1.0], f[f < 1.0])) if (f < 1.0).any() else 0.0,
+                float(_TRAPZ(p[m_vlf], f[m_vlf])) if m_vlf.any() else 0.0,
+                psd_lf, psd_hf,
+                psd_lf / (psd_hf + 1e-10),   # LF/HF ratio
                 float(f[np.argmax(p)]),
             ]
             row += [_higuchi_fd(s), _petrosian_fd(s)]
             row += _peak_features(s, fs)
+            row += [float(s.max() - s.min())]  # pulse_amp
         if has_ptt:
             row += _ptt_features(X[i, :, ecg_ci], X[i, :, ppg_ci], fs)
         rows.append(row)
@@ -632,7 +654,7 @@ def get_features(X, channels, cfg, split_name):
     os.makedirs(cache_dir, exist_ok=True)
     ds_tag     = f"_ds{cfg.get('downsample', 1)}" if cfg.get("downsample", 1) > 1 else ""
     cache_path = os.path.join(cache_dir,
-                              f"{split_name}_{ch_tag}_seq{cfg['seq_len']}{ds_tag}_v2.npy")
+                              f"{split_name}_{ch_tag}_seq{cfg['seq_len']}{ds_tag}_v3.npy")
     if os.path.exists(cache_path):
         F = np.load(cache_path)
         print(f"  Loaded cached features: {os.path.basename(cache_path)}  {F.shape}")
@@ -644,14 +666,29 @@ def get_features(X, channels, cfg, split_name):
     return F
 
 
+def _fmt_tree(node, fnames, lines, depth=0):
+    """Recursively format a LightGBM tree node into a list of lines."""
+    pad = "  " * depth
+    if "leaf_value" in node:
+        lines.append(f"{pad}-> {node['leaf_value']:.3f} mmHg  (n={node.get('leaf_count','?')})")
+    else:
+        feat   = fnames[node["split_feature"]] if fnames else f"f{node['split_feature']}"
+        thresh = node["threshold"]
+        lines.append(f"{pad}if {feat} <= {thresh:.4f}:")
+        _fmt_tree(node["left_child"],  fnames, lines, depth + 1)
+        lines.append(f"{pad}else:  # {feat} > {thresh:.4f}")
+        _fmt_tree(node["right_child"], fnames, lines, depth + 1)
+
+
 def train_lgbm(F_tr, y_tr, F_va, y_va, F_te, y_te, cfg, run_name, channels=None):
     use_wb     = WANDB_AVAILABLE and bool(os.environ.get("WANDB_API_KEY"))
     results    = {}
-    feat_names = _feature_names(channels) if channels else None
+    fnames     = _feature_names(channels) if channels else [f"f{i}" for i in range(F_tr.shape[1])]
+    smoke      = cfg.get("smoke", False)
 
     for target_idx, target_name in enumerate(["sbp", "dbp"]):
         rname = f"{run_name}_{target_name}"
-        run = None
+        run   = None
         if use_wb:
             wb_cfg = {k: v for k, v in cfg.items() if k != "channel_map"}
             run = wandb.init(project=cfg["wandb_project"], entity=cfg.get("wandb_entity"),
@@ -659,108 +696,145 @@ def train_lgbm(F_tr, y_tr, F_va, y_va, F_te, y_te, cfg, run_name, channels=None)
                              config={**wb_cfg, "model": run_name, "target": target_name},
                              reinit=True)
 
+        # ── Optuna hyperparameter search on val set ───────────────────────────
+        if OPTUNA_AVAILABLE and not smoke:
+            print(f"  Optuna search [{target_name.upper()}] (50 trials) ...")
+            def _objective(trial):
+                p = dict(
+                    n_estimators      = 2000,
+                    learning_rate     = trial.suggest_float("learning_rate",    0.01, 0.2,  log=True),
+                    num_leaves        = trial.suggest_int(  "num_leaves",       15,   127),
+                    max_depth         = trial.suggest_int(  "max_depth",        3,    8),
+                    min_child_samples = trial.suggest_int(  "min_child_samples",5,    50),
+                    subsample         = trial.suggest_float("subsample",        0.6,  1.0),
+                    colsample_bytree  = trial.suggest_float("colsample_bytree", 0.5,  1.0),
+                    reg_alpha         = trial.suggest_float("reg_alpha",        1e-8, 1.0, log=True),
+                    reg_lambda        = trial.suggest_float("reg_lambda",       1e-8, 1.0, log=True),
+                    random_state=cfg["seed"], verbose=-1)
+                tm = lgb.LGBMRegressor(**p)
+                tm.fit(F_tr, y_tr[:, target_idx],
+                       eval_set=[(F_va, y_va[:, target_idx])],
+                       callbacks=[lgb.early_stopping(30, verbose=False)])
+                return mean_absolute_error(y_va[:, target_idx], tm.predict(F_va))
+            study = optuna.create_study(
+                direction="minimize",
+                sampler=optuna.samplers.TPESampler(seed=cfg["seed"]))
+            study.optimize(_objective, n_trials=50, show_progress_bar=False)
+            best_hp = study.best_params
+            print(f"  Best val MAE={study.best_value:.3f}  params={best_hp}")
+        else:
+            best_hp = dict(learning_rate=cfg["lgbm_lr"], num_leaves=63, max_depth=7,
+                           min_child_samples=20, subsample=0.8, colsample_bytree=0.8,
+                           reg_alpha=0.0, reg_lambda=0.0)
+            study   = None
+
+        # ── Final model with best hyperparams ────────────────────────────────
         evals_result = {}
         t0 = time.time()
-        m = lgb.LGBMRegressor(
-            n_estimators=cfg["lgbm_n_estimators"], learning_rate=cfg["lgbm_lr"],
-            max_depth=7, num_leaves=63, subsample=0.8,
-            colsample_bytree=0.8, random_state=cfg["seed"], verbose=-1)
+        m  = lgb.LGBMRegressor(
+            n_estimators=cfg["lgbm_n_estimators"],
+            random_state=cfg["seed"], verbose=-1, **best_hp)
         m.fit(F_tr, y_tr[:, target_idx],
               eval_set=[(F_tr, y_tr[:, target_idx]), (F_va, y_va[:, target_idx])],
               eval_names=["train", "val"],
               callbacks=[lgb.early_stopping(50, verbose=False),
                          lgb.log_evaluation(100),
                          lgb.record_evaluation(evals_result)])
-        train_time  = time.time() - t0
-        preds_te    = m.predict(F_te)
-        mae         = mean_absolute_error(y_te[:, target_idx], preds_te)
-        rmse        = mean_squared_error(y_te[:, target_idx],  preds_te) ** 0.5
+        train_time = time.time() - t0
+        preds_te   = m.predict(F_te)
+        mae        = mean_absolute_error(y_te[:, target_idx], preds_te)
+        rmse       = mean_squared_error( y_te[:, target_idx], preds_te) ** 0.5
         best_iter  = m.best_iteration_ or cfg["lgbm_n_estimators"]
 
-        fnames     = feat_names or [f"f{i}" for i in range(len(m.feature_importances_))]
         imp_sorted = sorted(zip(fnames, m.feature_importances_.tolist()),
                             key=lambda x: x[1], reverse=True)
+
+        # ── Single-estimator decision tree ───────────────────────────────────
+        tree_m = lgb.LGBMRegressor(n_estimators=1, max_depth=4,
+                                    random_state=cfg["seed"], verbose=-1)
+        tree_m.fit(F_tr, y_tr[:, target_idx])
+        tree_mae  = mean_absolute_error(y_te[:, target_idx], tree_m.predict(F_te))
+        tree_node = tree_m.booster_.dump_model()["tree_info"][0]["tree_structure"]
+        tree_lines: list = []
+        _fmt_tree(tree_node, fnames, tree_lines)
+        tree_text = "\n".join(tree_lines)
+        print(f"\n  Decision tree [{target_name.upper()}]  (single-tree test MAE={tree_mae:.2f}):")
+        print(tree_text, "\n")
+
+        # ── Save JSON ─────────────────────────────────────────────────────────
+        results_dir = cfg.get("results_dir", ".")
+        os.makedirs(results_dir, exist_ok=True)
         meta = {
             "name": rname, "target": target_name,
-            "hyperparams": {"n_estimators": cfg["lgbm_n_estimators"],
-                            "learning_rate": cfg["lgbm_lr"],
-                            "max_depth": 7, "num_leaves": 63,
-                            "subsample": 0.8, "colsample_bytree": 0.8,
+            "hyperparams": {**best_hp, "n_estimators": cfg["lgbm_n_estimators"],
                             "best_iteration": best_iter},
             "data": {"channels": channels or [], "n_features": len(fnames),
                      "n_train": len(F_tr), "n_val": len(F_va), "n_test": len(F_te),
-                     "seq_len": cfg.get("seq_len")},
+                     "seq_len": cfg.get("seq_len"), "downsample": cfg.get("downsample", 1)},
             "metrics": {"mae": float(mae), "rmse": float(rmse)},
             "train_time_s": round(train_time, 1),
-            "top20_features": [{"feature": f, "importance": int(v)}
-                               for f, v in imp_sorted[:20]],
+            "top20_features": [{"rank": i+1, "feature": f, "importance": int(v)}
+                               for i, (f, v) in enumerate(imp_sorted[:20])],
         }
-        results_dir = cfg.get("results_dir", ".")
-        os.makedirs(results_dir, exist_ok=True)
         with open(os.path.join(results_dir, f"{rname}_best.json"), "w") as fh:
             json.dump(meta, fh, indent=2)
 
-        # ── Single-estimator decision tree for interpretability ──────────────
-        tree_m = lgb.LGBMRegressor(
-            n_estimators=1, max_depth=4, random_state=cfg["seed"], verbose=-1)
-        tree_m.fit(F_tr, y_tr[:, target_idx])
-        tree_mae = mean_absolute_error(y_te[:, target_idx], tree_m.predict(F_te))
-        print(f"  Single-tree {target_name.upper()}: MAE={tree_mae:.2f} mmHg")
-        node = tree_m.booster_.dump_model()["tree_info"][0]["tree_structure"]
-        def _print_tree(n, depth=0):
-            pad = "  " * depth
-            if "leaf_value" in n:
-                print(f"{pad}-> {n['leaf_value']:.2f} mmHg  (n={n.get('leaf_count','?')})")
-            else:
-                feat = fnames[n["split_feature"]] if fnames else f"f{n['split_feature']}"
-                print(f"{pad}if {feat} <= {n['threshold']:.4f}:")
-                _print_tree(n["left_child"],  depth + 1)
-                print(f"{pad}else:")
-                _print_tree(n["right_child"], depth + 1)
-        print(f"\n  Decision tree [{target_name.upper()}]:")
-        _print_tree(node)
-        print()
-
+        # ── W&B logging ───────────────────────────────────────────────────────
         if use_wb and run:
+            # Training curves
             tr_l1 = evals_result.get("train", {}).get("l1", [])
             va_l1 = evals_result.get("val",   {}).get("l1", [])
             for rnd, (tr, va) in enumerate(zip(tr_l1, va_l1)):
-                wandb.log({f"lgbm_{target_name}/round":     rnd,
-                           f"lgbm_{target_name}/train_mae": tr,
-                           f"lgbm_{target_name}/val_mae":   va}, step=rnd)
+                wandb.log({"lgbm/round": rnd, "lgbm/train_mae": tr,
+                           "lgbm/val_mae": va}, step=rnd)
 
-            # Top-20 feature importance bar chart
-            imp_table = wandb.Table(columns=["feature", "importance"],
-                                    data=[[f, v] for f, v in imp_sorted[:20]])
-            wandb.log({f"lgbm_{target_name}/feature_importance":
+            # Feature importance — ordered by rank, so chart is sorted
+            imp_table = wandb.Table(
+                columns=["rank", "feature", "importance"],
+                data=[[i+1, f, v] for i, (f, v) in enumerate(imp_sorted[:20])])
+            wandb.log({"lgbm/feature_importance":
                        wandb.plot.bar(imp_table, "feature", "importance",
-                                      title=f"Top-20 Feature Importance - {target_name.upper()}")})
+                                      title=f"Top-20 Features ({target_name.upper()})")})
 
-            # SHAP waterfall for one representative test sample
+            # Decision tree as HTML (readable in W&B UI)
+            tree_html = (f"<h3>Single-tree {target_name.upper()} "
+                         f"— test MAE {tree_mae:.2f} mmHg</h3>"
+                         f"<pre style='font-size:13px'>{tree_text}</pre>")
+            wandb.log({"lgbm/decision_tree": wandb.Html(tree_html)})
+
+            # Optuna trial table
+            if study is not None:
+                opt_cols = ["trial", "val_mae"] + list(best_hp.keys())
+                opt_data = [[t.number, t.value] + [t.params.get(k) for k in best_hp]
+                            for t in study.trials if t.value is not None]
+                wandb.log({"lgbm/optuna_trials": wandb.Table(columns=opt_cols, data=opt_data)})
+
+            # SHAP waterfall
             if SHAP_AVAILABLE:
                 try:
-                    explainer   = shap.TreeExplainer(m)
-                    shap_vals   = explainer.shap_values(F_te[:200])
-                    shap_exp    = shap.Explanation(
-                        values       = shap_vals[0],
-                        base_values  = float(explainer.expected_value),
-                        data         = F_te[0],
-                        feature_names= fnames)
+                    explainer = shap.TreeExplainer(m)
+                    shap_vals = explainer.shap_values(F_te[:200])
+                    shap_exp  = shap.Explanation(
+                        values=shap_vals[0], base_values=float(explainer.expected_value),
+                        data=F_te[0], feature_names=fnames)
                     fig, _ = plt.subplots(figsize=(10, 7))
                     shap.plots.waterfall(shap_exp, show=False)
-                    wandb.log({f"lgbm_{target_name}/shap_waterfall": wandb.Image(fig)})
+                    wandb.log({"lgbm/shap_waterfall": wandb.Image(fig)})
                     plt.close(fig)
                 except Exception as e:
                     print(f"  SHAP skipped: {e}")
 
-            run.summary.update({f"best/mae_{target_name}": mae,
-                                 f"best/rmse_{target_name}": rmse,
-                                 "best_iteration": best_iter,
-                                 "train_time_s": train_time})
+            # Consistent naming with deep models: best/test_mae_sbp / best/test_mae_dbp
+            run.summary.update({
+                f"best/test_mae_{target_name}":  mae,
+                f"best/test_rmse_{target_name}": rmse,
+                "best_iteration": best_iter,
+                "train_time_s":   train_time,
+            })
             run.finish()
 
         print(f"  LightGBM {target_name.upper()}: MAE={mae:.2f}  RMSE={rmse:.2f} mmHg "
-              f"({best_iter} trees, {train_time:.1f}s)  -> {rname}_best.json")
+              f"({best_iter} trees, {train_time:.1f}s)")
         results[f"mae_{target_name}"]  = mae
         results[f"rmse_{target_name}"] = rmse
 

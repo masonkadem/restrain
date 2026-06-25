@@ -34,6 +34,10 @@ mkdir -p "$LOG_DIR"
 # Ordered by priority: dual/tri stream and S4 first, then transformer/lgbm baselines.
 # Format: "model  channels"
 EXPERIMENTS=(
+    # LGBM first — fast (~5 min each) and sets the feature importance baseline
+    "lgbm         ppg,ecg"
+    "lgbm         ppg,ecg,resp"
+    # Deep models — priority order
     "dual_stream  ppg,ecg"
     "tri_stream   ppg,ecg,resp"
     "s4_cross     ppg,ecg"
@@ -43,8 +47,6 @@ EXPERIMENTS=(
     "s4           ppg"
     "transformer  ppg"
     "transformer  ppg,ecg,resp"
-    "lgbm         ppg,ecg"
-    "lgbm         ppg,ecg,resp"
 )
 
 # Returns 0 if a 25 Hz result (downsample=5) already exists for this run.
