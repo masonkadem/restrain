@@ -1083,6 +1083,8 @@ def main():
     parser.add_argument("--seed",                type=int,   default=42)
     parser.add_argument("--downsample",   type=int,   default=1, metavar="F",
                         help="Downsample factor applied after loading (e.g. 5 for 125→25 Hz)")
+    parser.add_argument("--run_name",     default=None,
+                        help="Override run/checkpoint name (default: <model>_<channels>)")
     parser.add_argument("--wandb_project", default="bp-estimation")
     parser.add_argument("--data_root",    default=_ROOT)
     args = parser.parse_args()
@@ -1133,7 +1135,7 @@ def main():
     cfg["results_dir"] = os.path.join(args.data_root, "results")
 
     seed_everything(cfg["seed"])
-    run_name = f"{args.model}_{'_'.join(channels)}"
+    run_name = args.run_name or f"{args.model}_{'_'.join(channels)}"
     mode_tag = " [SMOKE]" if args.smoke else ""
     print(f"\n{'='*65}")
     print(f"  Experiment: {run_name}{mode_tag}")

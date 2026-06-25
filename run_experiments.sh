@@ -32,24 +32,27 @@ PYTHON="${PYTHON:-python}"
 LOG_DIR="${DATA_ROOT}/logs"
 mkdir -p "$LOG_DIR"
 
-# Ordered by priority: dual/tri stream and S4 first, then transformer/lgbm baselines.
-# Format: "model  channels"
+# Format per entry:  "run_name | model | channels | extra_flags"
+# run_name controls the checkpoint/JSON/W&B name, so the same model+channels can
+# appear multiple times with different flags (e.g. cosine vs plateau scheduler).
 EXPERIMENTS=(
-    # LGBM first — fast (~5 min each) and sets the feature importance baseline
-    "lgbm          ppg,ecg"
-    "lgbm          ppg,ecg,resp"
-    # Deep models — priority order
-    "dual_stream   ppg,ecg"
-    "tri_stream    ppg,ecg,resp"
-    "noise_robust  ppg,ecg"
-    "noise_robust  ppg,ecg,resp"
-    "s4_cross      ppg,ecg"
-    "s4_cross      ppg,ecg,resp"
-    "s4            ppg,ecg"
-    "s4            ppg,ecg,resp"
-    "s4            ppg"
-    "transformer   ppg"
-    "transformer   ppg,ecg,resp"
+    # LGBM first — fast and sets the feature-importance baseline
+    "lgbm_ppg_ecg               | lgbm        | ppg,ecg      |"
+    "lgbm_ppg_ecg_resp          | lgbm        | ppg,ecg,resp |"
+    # S4 cross-channel — best model so far: test BOTH schedulers head-to-head
+    "s4_cross_ppg_ecg_cosine    | s4_cross    | ppg,ecg      | --scheduler cosine"
+    "s4_cross_ppg_ecg_plateau   | s4_cross    | ppg,ecg      | --scheduler plateau"
+    "s4_cross_ppg_ecg_resp      | s4_cross    | ppg,ecg,resp | --scheduler cosine"
+    # Other deep models (cosine default)
+    "dual_stream_ppg_ecg        | dual_stream | ppg,ecg      |"
+    "tri_stream_ppg_ecg_resp    | tri_stream  | ppg,ecg,resp |"
+    "noise_robust_ppg_ecg       | noise_robust| ppg,ecg      |"
+    "noise_robust_ppg_ecg_resp  | noise_robust| ppg,ecg,resp |"
+    "s4_ppg_ecg                 | s4          | ppg,ecg      |"
+    "s4_ppg_ecg_resp            | s4          | ppg,ecg,resp |"
+    "s4_ppg                     | s4          | ppg          |"
+    "transformer_ppg            | transformer | ppg          |"
+    "transformer_ppg_ecg_resp   | transformer | ppg,ecg,resp |"
 )
 
 # Returns 0 if a result for the CURRENT architecture version already exists.
@@ -57,39 +60,37 @@ EXPERIMENTS=(
 # results from a previous architecture are re-run rather than skipped.
 ARCH_VERSION="v2"
 already_done() {
-    local model="$1" channels="$2"
-    local name_tag="${model}_${channels//,/_}"
-
+    local name="$1" model="$2"
     if [[ "$model" == "lgbm" ]]; then
-        local json="${DATA_ROOT}/results/${name_tag}_sbp_best.json"
+        local json="${DATA_ROOT}/results/${name}_sbp_best.json"
     else
-        local json="${DATA_ROOT}/results/${name_tag}_best.json"
+        local json="${DATA_ROOT}/results/${name}_best.json"
     fi
     [[ -f "$json" ]] && grep -q "\"arch_version\": \"${ARCH_VERSION}\"" "$json" 2>/dev/null
 }
 
 run_experiment() {
-    local model="$1" channels="$2"
-    local tag="${model}__${channels//,/_}"
-    local log_file="${LOG_DIR}/${tag}.log"
+    local name="$1" model="$2" channels="$3" flags="$4"
+    local log_file="${LOG_DIR}/${name}.log"
 
     echo "------------------------------------------------------------"
-    echo "  START  model=${model}  channels=${channels}  (25 Hz, batch=32)"
+    echo "  START  ${name}  (model=${model} channels=${channels} ${flags})"
     echo "  log -> ${log_file}"
     echo "------------------------------------------------------------"
 
     CUDA_VISIBLE_DEVICES="$CUDA_DEVICE" "$PYTHON" "${DATA_ROOT}/train.py" \
         --model         "$model"          \
         --channels      "$channels"       \
+        --run_name      "$name"           \
         --gpu_profile   "$GPU_PROFILE"    \
         --downsample    "$DOWNSAMPLE"     \
         --seed          "$SEED"           \
         --wandb_project "$WANDB_PROJECT"  \
         --data_root     "$DATA_ROOT"      \
-        $EXTRA \
+        $flags $EXTRA \
         2>&1 | tee "$log_file" \
-    && echo "  DONE   model=${model}  channels=${channels}" \
-    || echo "  FAILED model=${model}  channels=${channels}  (see ${log_file})"
+    && echo "  DONE   ${name}" \
+    || echo "  FAILED ${name}  (see ${log_file})"
 }
 
 echo "============================================================"
@@ -97,14 +98,19 @@ echo "  BP estimation sweep  |  25 Hz  |  GPU profile: ${GPU_PROFILE}"
 echo "============================================================"
 
 for entry in "${EXPERIMENTS[@]}"; do
-    read -r model channels <<< "$entry"
+    IFS='|' read -r name model channels flags <<< "$entry"
+    # trim surrounding whitespace from each field
+    name="$(echo -e "${name}" | xargs)"
+    model="$(echo -e "${model}" | xargs)"
+    channels="$(echo -e "${channels}" | xargs)"
+    flags="$(echo -e "${flags}" | xargs)"
 
-    if already_done "$model" "$channels"; then
-        echo "  SKIP   model=${model}  channels=${channels}  (25 Hz result exists)"
+    if already_done "$name" "$model"; then
+        echo "  SKIP   ${name}  (v2 result exists)"
         continue
     fi
 
-    run_experiment "$model" "$channels"
+    run_experiment "$name" "$model" "$channels" "$flags"
 done
 
 echo ""
