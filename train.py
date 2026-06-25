@@ -25,6 +25,15 @@ try:
     TORCHINFO_AVAILABLE = True
 except ImportError:
     TORCHINFO_AVAILABLE = False
+
+try:
+    import shap
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    SHAP_AVAILABLE = True
+except ImportError:
+    SHAP_AVAILABLE = False
 import numpy as np
 from scipy import stats
 from scipy.signal import welch, find_peaks
@@ -317,64 +326,86 @@ class BPTransformer(nn.Module):
         return self.head(self.enc(x).transpose(1, 2))
 
 
-class BPDualStreamTransformer(nn.Module):
-    """PPG+ECG dual-stream with bidirectional cross-attention. Requires channels=['ppg','ecg']."""
-    def __init__(self, d_model=128, n_heads=8, n_layers=4, seq_len=1875, dropout=0.1):
+class _ModalFusionBlock(nn.Module):
+    """All-pairs bidirectional cross-attention for N modalities + per-modality FFN.
+    Each modality queries all others (concatenated in seq dim), matching the
+    BiDirectionalFusionBlock pattern from the prior cross-site project."""
+    def __init__(self, n_mod, d_model, n_heads, dropout):
         super().__init__()
-        enc_kw = dict(batch_first=True, norm_first=True)
-        make_enc = lambda: nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model, n_heads, d_model*4, dropout, **enc_kw),
+        self.cross_attn = nn.ModuleList([
+            nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
+            for _ in range(n_mod)])
+        self.norms = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(n_mod)])
+        self.ffns  = nn.ModuleList([
+            nn.Sequential(nn.LayerNorm(d_model),
+                          nn.Linear(d_model, d_model * 4), nn.GELU(),
+                          nn.Dropout(dropout), nn.Linear(d_model * 4, d_model))
+            for _ in range(n_mod)])
+
+    def forward(self, embs):
+        n, out = len(embs), []
+        for i in range(n):
+            others   = torch.cat([embs[j] for j in range(n) if j != i], dim=1)
+            attended, _ = self.cross_attn[i](embs[i], others, others)
+            x = self.norms[i](embs[i] + attended)
+            out.append(x + self.ffns[i](x))
+        return out
+
+
+class BPDualStreamTransformer(nn.Module):
+    """PPG+ECG: per-modality projection → 3 cross-attention fusion blocks → shared encoder.
+    Requires channels=['ppg','ecg']."""
+    def __init__(self, d_model=128, n_heads=8, n_layers=2, seq_len=375,
+                 n_fusion_blocks=3, dropout=0.1):
+        super().__init__()
+        n_mod = 2
+        self.proj   = nn.ModuleList([nn.Linear(1, d_model) for _ in range(n_mod)])
+        self.pos    = nn.ModuleList([nn.Embedding(seq_len, d_model) for _ in range(n_mod)])
+        self.fusion = nn.ModuleList([_ModalFusionBlock(n_mod, d_model, n_heads, dropout)
+                                     for _ in range(n_fusion_blocks)])
+        self.encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model, n_heads, d_model * 4, dropout,
+                                       batch_first=True, norm_first=True),
             num_layers=n_layers)
-        self.ppg_proj = nn.Linear(1, d_model); self.ppg_pos = nn.Embedding(seq_len, d_model)
-        self.ecg_proj = nn.Linear(1, d_model); self.ecg_pos = nn.Embedding(seq_len, d_model)
-        self.ppg_enc  = make_enc(); self.ecg_enc = make_enc()
-        self.ppg2ecg  = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
-        self.ecg2ppg  = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
-        self.ppg_xn   = nn.LayerNorm(d_model); self.ecg_xn = nn.LayerNorm(d_model)
-        self.fusion   = nn.Sequential(nn.Linear(d_model*2, d_model), nn.GELU(), nn.LayerNorm(d_model))
-        self.head     = nn.Sequential(
+        self.head = nn.Sequential(
             nn.AdaptiveAvgPool1d(1), nn.Flatten(),
             nn.Linear(d_model, 64), nn.GELU(), nn.Dropout(dropout), nn.Linear(64, 2))
 
     def forward(self, x):
-        B, L, _ = x.shape; pos = torch.arange(L, device=x.device)
-        ppg = self.ppg_enc(self.ppg_proj(x[:,:,0:1]) + self.ppg_pos(pos))
-        ecg = self.ecg_enc(self.ecg_proj(x[:,:,1:2]) + self.ecg_pos(pos))
-        ppg = self.ppg_xn(ppg + self.ppg2ecg(ppg, ecg, ecg)[0])
-        ecg = self.ecg_xn(ecg + self.ecg2ppg(ecg, ppg, ppg)[0])
-        return self.head(self.fusion(torch.cat([ppg, ecg], dim=-1)).transpose(1, 2))
+        pos  = torch.arange(x.shape[1], device=x.device)
+        embs = [self.proj[c](x[:, :, c:c+1]) + self.pos[c](pos) for c in range(2)]
+        for block in self.fusion:
+            embs = block(embs)
+        fused = torch.stack(embs, dim=0).mean(0)
+        return self.head(self.encoder(fused).transpose(1, 2))
 
 
 class BPTriStreamTransformer(nn.Module):
-    """PPG+ECG+RESP tri-stream with all-pairs cross-attention. Requires channels=['ppg','ecg','resp']."""
-    def __init__(self, d_model=128, n_heads=8, n_layers=4, seq_len=1875, dropout=0.1):
+    """PPG+ECG+RESP: per-modality projection → 3 cross-attention fusion blocks → shared encoder.
+    Requires channels=['ppg','ecg','resp']."""
+    def __init__(self, d_model=128, n_heads=8, n_layers=2, seq_len=375,
+                 n_fusion_blocks=3, dropout=0.1):
         super().__init__()
-        enc_kw = dict(batch_first=True, norm_first=True)
-        def make_enc():
-            return nn.TransformerEncoder(
-                nn.TransformerEncoderLayer(d_model, n_heads, d_model*4, dropout, **enc_kw),
-                num_layers=n_layers)
-        for name in ("ppg", "ecg", "resp"):
-            setattr(self, f"{name}_proj",  nn.Linear(1, d_model))
-            setattr(self, f"{name}_pos",   nn.Embedding(seq_len, d_model))
-            setattr(self, f"{name}_enc",   make_enc())
-            setattr(self, f"{name}_xattn",
-                    nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True))
-            setattr(self, f"{name}_xnorm", nn.LayerNorm(d_model))
-        self.fusion = nn.Sequential(nn.Linear(d_model*3, d_model), nn.GELU(), nn.LayerNorm(d_model))
-        self.head   = nn.Sequential(
+        n_mod = 3
+        self.proj   = nn.ModuleList([nn.Linear(1, d_model) for _ in range(n_mod)])
+        self.pos    = nn.ModuleList([nn.Embedding(seq_len, d_model) for _ in range(n_mod)])
+        self.fusion = nn.ModuleList([_ModalFusionBlock(n_mod, d_model, n_heads, dropout)
+                                     for _ in range(n_fusion_blocks)])
+        self.encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model, n_heads, d_model * 4, dropout,
+                                       batch_first=True, norm_first=True),
+            num_layers=n_layers)
+        self.head = nn.Sequential(
             nn.AdaptiveAvgPool1d(1), nn.Flatten(),
             nn.Linear(d_model, 64), nn.GELU(), nn.Dropout(dropout), nn.Linear(64, 2))
 
     def forward(self, x):
-        B, L, _ = x.shape; pos = torch.arange(L, device=x.device)
-        ppg  = self.ppg_enc( self.ppg_proj( x[:,:,0:1]) + self.ppg_pos(pos))
-        ecg  = self.ecg_enc( self.ecg_proj( x[:,:,1:2]) + self.ecg_pos(pos))
-        resp = self.resp_enc(self.resp_proj(x[:,:,2:3]) + self.resp_pos(pos))
-        ppg  = self.ppg_xnorm( ppg  + self.ppg_xattn( ppg,  torch.cat([ecg, resp], 1), torch.cat([ecg, resp], 1))[0])
-        ecg  = self.ecg_xnorm( ecg  + self.ecg_xattn( ecg,  torch.cat([ppg, resp], 1), torch.cat([ppg, resp], 1))[0])
-        resp = self.resp_xnorm(resp + self.resp_xattn(resp, torch.cat([ppg, ecg],  1), torch.cat([ppg, ecg],  1))[0])
-        return self.head(self.fusion(torch.cat([ppg, ecg, resp], dim=-1)).transpose(1, 2))
+        pos  = torch.arange(x.shape[1], device=x.device)
+        embs = [self.proj[c](x[:, :, c:c+1]) + self.pos[c](pos) for c in range(3)]
+        for block in self.fusion:
+            embs = block(embs)
+        fused = torch.stack(embs, dim=0).mean(0)
+        return self.head(self.encoder(fused).transpose(1, 2))
 
 
 class S4DLayer(nn.Module):
@@ -423,6 +454,50 @@ class BPS4(nn.Module):
         x = self.proj(x)
         for layer in self.layers: x = layer(x)
         return self.head(self.norm(x).transpose(1, 2))
+
+
+class BPS4CrossChannel(nn.Module):
+    """Per-channel S4 encoder → temporal pool → cross-channel MHA → head.
+
+    Cross-channel MHA treats each modality as a 'site token' — identical concept to
+    cross-site fusion in the prior project, applied across PPG/ECG/RESP instead of
+    wrist/chest locations.  S4 handles time; MHA handles inter-channel relationships.
+    """
+    def __init__(self, n_channels, d_model=256, d_state=128, n_layers=6,
+                 n_heads=8, dropout=0.1):
+        super().__init__()
+        self.n_channels = n_channels
+        # Independent S4 stack per channel (each channel is its own site)
+        self.projs     = nn.ModuleList([nn.Linear(1, d_model) for _ in range(n_channels)])
+        self.s4_stacks = nn.ModuleList([
+            nn.ModuleList([S4DLayer(d_model, d_state, dropout) for _ in range(n_layers)])
+            for _ in range(n_channels)])
+        self.ch_norms  = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(n_channels)])
+
+        # Cross-channel MHA: n_channels tokens, each of size d_model
+        self.cross_attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
+        self.cross_norm = nn.LayerNorm(d_model)
+        self.cross_ffn  = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, d_model * 4), nn.GELU(),
+            nn.Dropout(dropout), nn.Linear(d_model * 4, d_model))
+
+        self.head = nn.Sequential(
+            nn.Linear(d_model, 64), nn.GELU(), nn.Dropout(dropout), nn.Linear(64, 2))
+
+    def forward(self, x):
+        ch_feats = []
+        for c in range(self.n_channels):
+            h = self.projs[c](x[:, :, c:c+1])
+            for layer in self.s4_stacks[c]:
+                h = layer(h)
+            ch_feats.append(self.ch_norms[c](h).mean(dim=1))  # temporal pool → (B, d_model)
+
+        tokens   = torch.stack(ch_feats, dim=1)                # (B, n_ch, d_model)
+        attn_out, _ = self.cross_attn(tokens, tokens, tokens)
+        tokens   = self.cross_norm(tokens + attn_out)
+        tokens   = tokens + self.cross_ffn(tokens)
+        return self.head(tokens.mean(dim=1))                    # mean pool across channels
 
 
 # ── LightGBM ──────────────────────────────────────────────────────────────────
@@ -625,6 +700,27 @@ def train_lgbm(F_tr, y_tr, F_va, y_va, F_te, y_te, cfg, run_name, channels=None)
         with open(os.path.join(results_dir, f"{rname}_best.json"), "w") as fh:
             json.dump(meta, fh, indent=2)
 
+        # ── Single-estimator decision tree for interpretability ──────────────
+        tree_m = lgb.LGBMRegressor(
+            n_estimators=1, max_depth=4, random_state=cfg["seed"], verbose=-1)
+        tree_m.fit(F_tr, y_tr[:, target_idx])
+        tree_mae = mean_absolute_error(y_te[:, target_idx], tree_m.predict(F_te))
+        print(f"  Single-tree {target_name.upper()}: MAE={tree_mae:.2f} mmHg")
+        node = tree_m.booster_.dump_model()["tree_info"][0]["tree_structure"]
+        def _print_tree(n, depth=0):
+            pad = "  " * depth
+            if "leaf_value" in n:
+                print(f"{pad}-> {n['leaf_value']:.2f} mmHg  (n={n.get('leaf_count','?')})")
+            else:
+                feat = fnames[n["split_feature"]] if fnames else f"f{n['split_feature']}"
+                print(f"{pad}if {feat} <= {n['threshold']:.4f}:")
+                _print_tree(n["left_child"],  depth + 1)
+                print(f"{pad}else:")
+                _print_tree(n["right_child"], depth + 1)
+        print(f"\n  Decision tree [{target_name.upper()}]:")
+        _print_tree(node)
+        print()
+
         if use_wb and run:
             tr_l1 = evals_result.get("train", {}).get("l1", [])
             va_l1 = evals_result.get("val",   {}).get("l1", [])
@@ -632,11 +728,31 @@ def train_lgbm(F_tr, y_tr, F_va, y_va, F_te, y_te, cfg, run_name, channels=None)
                 wandb.log({f"lgbm_{target_name}/round":     rnd,
                            f"lgbm_{target_name}/train_mae": tr,
                            f"lgbm_{target_name}/val_mae":   va}, step=rnd)
+
+            # Top-20 feature importance bar chart
             imp_table = wandb.Table(columns=["feature", "importance"],
-                                    data=[[f, v] for f, v in imp_sorted[:30]])
+                                    data=[[f, v] for f, v in imp_sorted[:20]])
             wandb.log({f"lgbm_{target_name}/feature_importance":
                        wandb.plot.bar(imp_table, "feature", "importance",
-                                      title=f"Feature Importance - {target_name.upper()}")})
+                                      title=f"Top-20 Feature Importance - {target_name.upper()}")})
+
+            # SHAP waterfall for one representative test sample
+            if SHAP_AVAILABLE:
+                try:
+                    explainer   = shap.TreeExplainer(m)
+                    shap_vals   = explainer.shap_values(F_te[:200])
+                    shap_exp    = shap.Explanation(
+                        values       = shap_vals[0],
+                        base_values  = float(explainer.expected_value),
+                        data         = F_te[0],
+                        feature_names= fnames)
+                    fig, _ = plt.subplots(figsize=(10, 7))
+                    shap.plots.waterfall(shap_exp, show=False)
+                    wandb.log({f"lgbm_{target_name}/shap_waterfall": wandb.Image(fig)})
+                    plt.close(fig)
+                except Exception as e:
+                    print(f"  SHAP skipped: {e}")
+
             run.summary.update({f"best/mae_{target_name}": mae,
                                  f"best/rmse_{target_name}": rmse,
                                  "best_iteration": best_iter,
@@ -656,7 +772,8 @@ def train_lgbm(F_tr, y_tr, F_va, y_va, F_te, y_te, cfg, run_name, channels=None)
 def main():
     parser = argparse.ArgumentParser(description="BP estimation experiment runner")
     parser.add_argument("--model",    required=True,
-                        choices=["transformer", "dual_stream", "tri_stream", "s4", "lgbm"])
+                        choices=["transformer", "dual_stream", "tri_stream",
+                                 "s4", "s4_cross", "lgbm"])
     parser.add_argument("--channels", required=True,
                         help="Comma-separated channels, e.g. ppg,ecg,resp")
     parser.add_argument("--gpu_profile", default="3080",
@@ -777,11 +894,16 @@ def main():
         if args.model == "transformer":
             model = BPTransformer(n_ch, d_model, n_heads, n_layers, active_seq_len, 0.1).to(device)
         elif args.model == "dual_stream":
-            model = BPDualStreamTransformer(d_model, n_heads, n_layers, active_seq_len, 0.1).to(device)
+            model = BPDualStreamTransformer(d_model, n_heads, n_layers, active_seq_len,
+                                            dropout=0.1).to(device)
         elif args.model == "tri_stream":
-            model = BPTriStreamTransformer(d_model, n_heads, n_layers, active_seq_len, 0.1).to(device)
+            model = BPTriStreamTransformer(d_model, n_heads, n_layers, active_seq_len,
+                                           dropout=0.1).to(device)
         elif args.model == "s4":
             model = BPS4(n_ch, d_model, cfg["d_state"], n_layers, 0.1).to(device)
+        elif args.model == "s4_cross":
+            model = BPS4CrossChannel(n_ch, d_model, cfg["d_state"], n_layers,
+                                     n_heads, 0.1).to(device)
 
         print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
         metrics = train_deep(model, train_loader, val_loader, test_loader, cfg, run_name, device)

@@ -19,7 +19,7 @@ FS    = 125
 sys.path.insert(0, ".")
 from train import (
     BPTransformer, BPDualStreamTransformer, BPTriStreamTransformer,
-    BPS4, extract_features, _feature_names,
+    BPS4, BPS4CrossChannel, extract_features, _feature_names,
 )
 
 PASS = []; FAIL = []
@@ -50,6 +50,10 @@ check("BPS4(ppg)",
       lambda: fwd(BPS4(1, D, 32, LAYERS), torch.randn(B, SEQ, 1)))
 check("BPS4(ppg+ecg+resp)",
       lambda: fwd(BPS4(3, D, 32, LAYERS), torch.randn(B, SEQ, 3)))
+check("BPS4CrossChannel(ppg+ecg)",
+      lambda: fwd(BPS4CrossChannel(2, D, 16, LAYERS, HEADS), torch.randn(B, SEQ, 2)))
+check("BPS4CrossChannel(ppg+ecg+resp)",
+      lambda: fwd(BPS4CrossChannel(3, D, 16, LAYERS, HEADS), torch.randn(B, SEQ, 3)))
 
 # ── feature extraction ────────────────────────────────────────────────────────
 for chs in [["ppg"], ["ppg","ecg"], ["ppg","resp"], ["ppg","ecg","resp"]]:

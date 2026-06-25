@@ -36,6 +36,8 @@ mkdir -p "$LOG_DIR"
 EXPERIMENTS=(
     "dual_stream  ppg,ecg"
     "tri_stream   ppg,ecg,resp"
+    "s4_cross     ppg,ecg"
+    "s4_cross     ppg,ecg,resp"
     "s4           ppg,ecg"
     "s4           ppg,ecg,resp"
     "s4           ppg"
