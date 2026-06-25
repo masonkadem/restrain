@@ -174,7 +174,8 @@ def _save_checkpoint(name, weights, cfg, metrics, n_params, extra=None):
 
 def train_deep(model, train_loader, val_loader, test_loader, cfg, run_name, device):
     seed_everything(cfg["seed"])
-    opt      = torch.optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=1e-4)
+    opt      = torch.optim.AdamW(model.parameters(), lr=cfg["lr"],
+                                 weight_decay=cfg.get("weight_decay", 1e-3))
     loss_fn  = nn.L1Loss()
     n_params = sum(p.numel() for p in model.parameters())
     use_wb   = WANDB_AVAILABLE and bool(os.environ.get("WANDB_API_KEY"))
@@ -200,7 +201,9 @@ def train_deep(model, train_loader, val_loader, test_loader, cfg, run_name, devi
                 f"<pre>{arch_summary}</pre>")}, commit=False)
 
     best_mae, best_w, best_epoch = float("inf"), None, 0
-    train_start = time.time()
+    no_improve   = 0
+    patience     = cfg.get("early_stop_patience", 20)
+    train_start  = time.time()
 
     for epoch in range(cfg["epochs"]):
         epoch_start = time.time()
@@ -239,10 +242,19 @@ def train_deep(model, train_loader, val_loader, test_loader, cfg, run_name, devi
             })
 
         if val_mae < best_mae:
-            best_mae = val_mae; best_epoch = epoch
+            best_mae = val_mae; best_epoch = epoch; no_improve = 0
             best_w   = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             _save_checkpoint(run_name, best_w, cfg, val_m, n_params,
                              extra={"best_epoch": best_epoch})
+        else:
+            no_improve += 1
+
+        if patience > 0 and no_improve >= patience:
+            print(f"[{run_name}] Early stop at epoch {epoch+1} "
+                  f"(no improvement for {patience} epochs)")
+            if use_wb and run:
+                wandb.log({"early_stop_epoch": epoch + 1})
+            break
 
         if (epoch + 1) % max(1, cfg["epochs"] // 10) == 0:
             elapsed = (time.time() - train_start) / 60
@@ -652,13 +664,18 @@ def main():
                         help="Controls window length + model size (fast / 3080 / h100)")
     parser.add_argument("--smoke",      action="store_true",
                         help="3 epochs / small data subset for sanity checks")
-    parser.add_argument("--epochs",       type=int,   default=None)
-    parser.add_argument("--batch_size",   type=int,   default=None)
-    parser.add_argument("--d_model",      type=int,   default=None)
-    parser.add_argument("--n_heads",      type=int,   default=None)
-    parser.add_argument("--n_layers",     type=int,   default=None)
-    parser.add_argument("--lr",           type=float, default=3e-4)
-    parser.add_argument("--seed",         type=int,   default=42)
+    parser.add_argument("--epochs",              type=int,   default=None)
+    parser.add_argument("--batch_size",          type=int,   default=None)
+    parser.add_argument("--d_model",             type=int,   default=None)
+    parser.add_argument("--n_heads",             type=int,   default=None)
+    parser.add_argument("--n_layers",            type=int,   default=None)
+    parser.add_argument("--d_state",             type=int,   default=64,
+                        help="S4 state dimension (default 64; try 128/256 to scale up)")
+    parser.add_argument("--lr",                  type=float, default=1e-4)
+    parser.add_argument("--weight_decay",        type=float, default=1e-3)
+    parser.add_argument("--early_stop_patience", type=int,   default=20,
+                        help="Stop if val MAE doesn't improve for N epochs (0=disabled)")
+    parser.add_argument("--seed",                type=int,   default=42)
     parser.add_argument("--downsample",   type=int,   default=1, metavar="F",
                         help="Downsample factor applied after loading (e.g. 5 for 125→25 Hz)")
     parser.add_argument("--wandb_project", default="bp-estimation")
@@ -689,14 +706,16 @@ def main():
         "d_model":           d_model,
         "n_heads":           n_heads,
         "n_layers":          n_layers,
-        "d_state":           64,
-        "dropout":           0.1,
-        "lr":                args.lr,
-        "epochs":            epochs,
-        "warmup_epochs":     max(1, epochs // 10),
-        "lgbm_n_estimators": 50  if args.smoke else 2000,
-        "lgbm_lr":           0.1 if args.smoke else 0.03,
-        "downsample":        args.downsample,
+        "d_state":              args.d_state,
+        "dropout":              0.1,
+        "lr":                   args.lr,
+        "weight_decay":         args.weight_decay,
+        "early_stop_patience":  args.early_stop_patience,
+        "epochs":               epochs,
+        "warmup_epochs":        max(1, epochs // 10),
+        "lgbm_n_estimators":    50  if args.smoke else 2000,
+        "lgbm_lr":              0.1 if args.smoke else 0.03,
+        "downsample":           args.downsample,
         "wandb_project":     args.wandb_project,
         "wandb_entity":      None,
     }

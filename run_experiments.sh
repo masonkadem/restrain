@@ -102,3 +102,9 @@ echo ""
 echo "============================================================"
 echo "  Sweep complete. Logs in: ${LOG_DIR}/"
 echo "============================================================"
+
+# Post comparison table to W&B (sweep_summary run)
+echo "Logging sweep summary to W&B..."
+WANDB_PROJECT="$WANDB_PROJECT" "$PYTHON" "${DATA_ROOT}/log_sweep_summary.py" "$DATA_ROOT" \
+    && echo "  sweep_summary run posted to W&B." \
+    || echo "  sweep_summary failed (non-fatal)."
