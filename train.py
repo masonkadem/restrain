@@ -27,11 +27,16 @@ except ImportError:
     TORCHINFO_AVAILABLE = False
 
 try:
-    import shap
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    SHAP_AVAILABLE = True
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
+
+try:
+    import shap
+    SHAP_AVAILABLE = MATPLOTLIB_AVAILABLE
 except ImportError:
     SHAP_AVAILABLE = False
 
@@ -77,6 +82,10 @@ _PROFILES = {
 FS          = 125
 CHANNEL_MAP = {"ppg": 0, "ecg": 1, "resp": 2}
 _ROOT       = os.path.dirname(os.path.abspath(__file__))
+
+# Bump when model architectures change so the sweep skip-logic re-runs stale results.
+# v2 = sinusoidal PE everywhere, redesigned dual/tri stream, fixed S4 cross-channel fusion.
+ARCH_VERSION = "v2"
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
@@ -169,6 +178,71 @@ def evaluate(model, loader, device):
         "rmse_sbp": mean_squared_error(tgts[:, 0], preds[:, 0]) ** 0.5,
         "rmse_dbp": mean_squared_error(tgts[:, 1], preds[:, 1]) ** 0.5,
     }
+
+
+@torch.no_grad()
+def predict(model, loader, device):
+    """Return raw (preds, targets) arrays of shape (N, 2) for diagnostics."""
+    model.eval()
+    preds, tgts = [], []
+    for x, y in loader:
+        preds.append(model(x.to(device)).cpu().numpy())
+        tgts.append(y.numpy())
+    return np.concatenate(preds), np.concatenate(tgts)
+
+
+def test_diagnostics(preds, tgts, use_wb=False):
+    """Compute clinical BP diagnostics and (optionally) build W&B figures.
+
+    Returns (metrics_dict, wandb_log_dict).  Metrics follow AAMI/BHS reporting:
+      ME (mean error / bias), SD of error, and % of predictions within 5/10/15 mmHg.
+    Figures: predicted-vs-true scatter and Bland-Altman, per target.
+    """
+    metrics, wb_logs = {}, {}
+    for i, t in enumerate(["sbp", "dbp"]):
+        p, g  = preds[:, i], tgts[:, i]
+        err   = p - g
+        me    = float(err.mean())
+        sd    = float(err.std())
+        mae   = float(np.abs(err).mean())
+        r     = float(np.corrcoef(p, g)[0, 1]) if len(p) > 1 else 0.0
+        w5    = float((np.abs(err) <= 5).mean()  * 100)
+        w10   = float((np.abs(err) <= 10).mean() * 100)
+        w15   = float((np.abs(err) <= 15).mean() * 100)
+        metrics.update({
+            f"test/{t}_me":        me,    # bias (AAMI wants |ME| <= 5)
+            f"test/{t}_sd":        sd,    # precision (AAMI wants SD <= 8)
+            f"test/{t}_mae":       mae,
+            f"test/{t}_corr":      r,
+            f"test/{t}_within5":   w5,    # BHS grade A: >=60%
+            f"test/{t}_within10":  w10,   # BHS grade A: >=85%
+            f"test/{t}_within15":  w15,   # BHS grade A: >=95%
+        })
+
+        if use_wb and MATPLOTLIB_AVAILABLE:
+            # Predicted-vs-true scatter (calibration / range-compression check)
+            fig, ax = plt.subplots(figsize=(5, 5))
+            ax.scatter(g, p, s=6, alpha=0.3)
+            lo, hi = float(min(g.min(), p.min())), float(max(g.max(), p.max()))
+            ax.plot([lo, hi], [lo, hi], "r--", lw=1)
+            ax.set_xlabel(f"True {t.upper()} (mmHg)")
+            ax.set_ylabel(f"Predicted {t.upper()} (mmHg)")
+            ax.set_title(f"{t.upper()}  MAE={mae:.2f}  r={r:.2f}")
+            wb_logs[f"diag/{t}_scatter"] = wandb.Image(fig); plt.close(fig)
+
+            # Bland-Altman (clinical agreement: bias +/- 1.96 SD)
+            fig, ax = plt.subplots(figsize=(5, 5))
+            mean_bp = (p + g) / 2
+            ax.scatter(mean_bp, err, s=6, alpha=0.3)
+            ax.axhline(me,             color="k",  lw=1)
+            ax.axhline(me + 1.96 * sd, color="r", ls="--", lw=1)
+            ax.axhline(me - 1.96 * sd, color="r", ls="--", lw=1)
+            ax.set_xlabel(f"Mean {t.upper()} (mmHg)")
+            ax.set_ylabel("Pred - True (mmHg)")
+            ax.set_title(f"{t.upper()} Bland-Altman  bias={me:.2f}  LoA=+/-{1.96*sd:.1f}")
+            wb_logs[f"diag/{t}_bland_altman"] = wandb.Image(fig); plt.close(fig)
+
+    return metrics, wb_logs
 
 
 def _save_checkpoint(name, weights, cfg, metrics, n_params, extra=None):
@@ -282,15 +356,31 @@ def train_deep(model, train_loader, val_loader, test_loader, cfg, run_name, devi
     total_time = time.time() - train_start
     model.load_state_dict(best_w)
     val_final  = evaluate(model, val_loader,  device)
-    test_final = evaluate(model, test_loader, device)
+    test_p, test_g = predict(model, test_loader, device)
+    test_final = {
+        "mae_sbp":  mean_absolute_error(test_g[:, 0], test_p[:, 0]),
+        "mae_dbp":  mean_absolute_error(test_g[:, 1], test_p[:, 1]),
+        "rmse_sbp": mean_squared_error(test_g[:, 0], test_p[:, 0]) ** 0.5,
+        "rmse_dbp": mean_squared_error(test_g[:, 1], test_p[:, 1]) ** 0.5,
+    }
+    diag_metrics, diag_figs = test_diagnostics(test_p, test_g, use_wb=bool(use_wb and run))
     _save_checkpoint(run_name, best_w, cfg,
                      {"val_" + k: v for k, v in val_final.items()} |
                      {"test_" + k: v for k, v in test_final.items()},
                      n_params,
                      extra={"best_epoch": best_epoch,
                             "total_train_time_s":  round(total_time, 1),
-                            "total_train_time_min": round(total_time / 60, 2)})
+                            "total_train_time_min": round(total_time / 60, 2),
+                            "diagnostics": diag_metrics})
     if use_wb and run:
+        if diag_figs:
+            wandb.log(diag_figs)
+        # Test MAE bar chart (quick visual comparison of SBP vs DBP)
+        mae_table = wandb.Table(columns=["target", "test_mae"],
+                                data=[["SBP", test_final["mae_sbp"]],
+                                      ["DBP", test_final["mae_dbp"]]])
+        wandb.log({"test/mae_bar": wandb.plot.bar(mae_table, "target", "test_mae",
+                                                  title="Test MAE (mmHg)")})
         run.summary.update({
             "best/val_mae_sbp":     val_final["mae_sbp"],
             "best/val_mae_dbp":     val_final["mae_dbp"],
@@ -302,6 +392,7 @@ def train_deep(model, train_loader, val_loader, test_loader, cfg, run_name, devi
             "n_params":             n_params,
             "total_train_time_s":   total_time,
             "total_train_time_min": total_time / 60,
+            **diag_metrics,
         })
         run.finish()
     print(f"[{run_name}] Done — {total_time/60:.1f} min | best epoch {best_epoch+1} | "
@@ -541,14 +632,20 @@ class BPS4(nn.Module):
 
 
 class BPS4CrossChannel(nn.Module):
-    """Per-channel S4 encoder → temporal pool → cross-channel MHA → head.
+    """Per-channel S4 encoder → full-sequence cross-channel fusion → temporal pool → head.
 
-    Cross-channel MHA treats each modality as a 'site token' — identical concept to
-    cross-site fusion in the prior project, applied across PPG/ECG/RESP instead of
-    wrist/chest locations.  S4 handles time; MHA handles inter-channel relationships.
+    Cross-attention runs on the FULL sequence (before any temporal pooling) so that
+    inter-channel *timing* relationships survive — e.g. a PPG foot at t can attend to
+    the ECG R-peak a few samples earlier, implicitly learning pulse transit time.
+    Pooling before fusion (the naive design) would average that timing away.
+
+    S4 handles within-channel dynamics; _ModalFusionBlock handles cross-channel
+    relationships — the modality analogue of cross-site fusion in the prior project.
+    S4 is inherently position-aware (its kernel is a causal convolution), so no
+    explicit positional encoding is added before fusion.
     """
     def __init__(self, n_channels, d_model=256, d_state=128, n_layers=6,
-                 n_heads=8, dropout=0.1):
+                 n_heads=8, n_fusion_blocks=3, dropout=0.1):
         super().__init__()
         self.n_channels = n_channels
         # Independent S4 stack per channel (each channel is its own site)
@@ -558,30 +655,30 @@ class BPS4CrossChannel(nn.Module):
             for _ in range(n_channels)])
         self.ch_norms  = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(n_channels)])
 
-        # Cross-channel MHA: n_channels tokens, each of size d_model
-        self.cross_attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
-        self.cross_norm = nn.LayerNorm(d_model)
-        self.cross_ffn  = nn.Sequential(
-            nn.LayerNorm(d_model),
-            nn.Linear(d_model, d_model * 4), nn.GELU(),
-            nn.Dropout(dropout), nn.Linear(d_model * 4, d_model))
+        # Full-sequence cross-channel fusion (all-pairs bidirectional cross-attention)
+        self.fusion = nn.ModuleList([
+            _ModalFusionBlock(n_channels, d_model, n_heads, dropout)
+            for _ in range(n_fusion_blocks)])
 
         self.head = nn.Sequential(
+            nn.AdaptiveAvgPool1d(1), nn.Flatten(),
             nn.Linear(d_model, 64), nn.GELU(), nn.Dropout(dropout), nn.Linear(64, 2))
 
     def forward(self, x):
-        ch_feats = []
+        # Stage 1 — independent temporal encoding per channel, keep full sequence
+        embs = []
         for c in range(self.n_channels):
             h = self.projs[c](x[:, :, c:c+1])
             for layer in self.s4_stacks[c]:
                 h = layer(h)
-            ch_feats.append(self.ch_norms[c](h).mean(dim=1))  # temporal pool → (B, d_model)
+            embs.append(self.ch_norms[c](h))               # (B, L, d_model)
 
-        tokens   = torch.stack(ch_feats, dim=1)                # (B, n_ch, d_model)
-        attn_out, _ = self.cross_attn(tokens, tokens, tokens)
-        tokens   = self.cross_norm(tokens + attn_out)
-        tokens   = tokens + self.cross_ffn(tokens)
-        return self.head(tokens.mean(dim=1))                    # mean pool across channels
+        # Stage 2 — cross-channel fusion on full sequence (preserves timing for PTT)
+        for block in self.fusion:
+            embs = block(embs)
+
+        fused = torch.stack(embs, dim=0).mean(0)            # (B, L, d_model)
+        return self.head(fused.transpose(1, 2))             # head pools over time
 
 
 # ── LightGBM ──────────────────────────────────────────────────────────────────
@@ -843,6 +940,7 @@ def train_lgbm(F_tr, y_tr, F_va, y_va, F_te, y_te, cfg, run_name, channels=None)
         os.makedirs(results_dir, exist_ok=True)
         meta = {
             "name": rname, "target": target_name,
+            "arch_version": cfg.get("arch_version", "v2"),
             "hyperparams": {**best_hp, "n_estimators": cfg["lgbm_n_estimators"],
                             "best_iteration": best_iter},
             "data": {"channels": channels or [], "n_features": len(fnames),
@@ -984,6 +1082,7 @@ def main():
         "lgbm_n_estimators":    50  if args.smoke else 2000,
         "lgbm_lr":              0.1 if args.smoke else 0.03,
         "downsample":           args.downsample,
+        "arch_version":         ARCH_VERSION,
         "wandb_project":     args.wandb_project,
         "wandb_entity":      None,
     }

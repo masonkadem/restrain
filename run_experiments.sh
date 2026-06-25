@@ -51,18 +51,20 @@ EXPERIMENTS=(
     "transformer   ppg,ecg,resp"
 )
 
-# Returns 0 if a 25 Hz result (downsample=5) already exists for this run.
+# Returns 0 if a result for the CURRENT architecture version already exists.
+# Keyed on arch_version (bumped in train.py whenever models change) so stale
+# results from a previous architecture are re-run rather than skipped.
+ARCH_VERSION="v2"
 already_done() {
     local model="$1" channels="$2"
     local name_tag="${model}_${channels//,/_}"
 
     if [[ "$model" == "lgbm" ]]; then
         local json="${DATA_ROOT}/results/${name_tag}_sbp_best.json"
-        [[ -f "$json" ]] && grep -q '"downsample": 5' "$json" 2>/dev/null
     else
         local json="${DATA_ROOT}/results/${name_tag}_best.json"
-        [[ -f "$json" ]] && grep -q '"downsample": 5' "$json" 2>/dev/null
     fi
+    [[ -f "$json" ]] && grep -q "\"arch_version\": \"${ARCH_VERSION}\"" "$json" 2>/dev/null
 }
 
 run_experiment() {
