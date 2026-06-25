@@ -35,18 +35,20 @@ mkdir -p "$LOG_DIR"
 # Format: "model  channels"
 EXPERIMENTS=(
     # LGBM first — fast (~5 min each) and sets the feature importance baseline
-    "lgbm         ppg,ecg"
-    "lgbm         ppg,ecg,resp"
+    "lgbm          ppg,ecg"
+    "lgbm          ppg,ecg,resp"
     # Deep models — priority order
-    "dual_stream  ppg,ecg"
-    "tri_stream   ppg,ecg,resp"
-    "s4_cross     ppg,ecg"
-    "s4_cross     ppg,ecg,resp"
-    "s4           ppg,ecg"
-    "s4           ppg,ecg,resp"
-    "s4           ppg"
-    "transformer  ppg"
-    "transformer  ppg,ecg,resp"
+    "dual_stream   ppg,ecg"
+    "tri_stream    ppg,ecg,resp"
+    "noise_robust  ppg,ecg"
+    "noise_robust  ppg,ecg,resp"
+    "s4_cross      ppg,ecg"
+    "s4_cross      ppg,ecg,resp"
+    "s4            ppg,ecg"
+    "s4            ppg,ecg,resp"
+    "s4            ppg"
+    "transformer   ppg"
+    "transformer   ppg,ecg,resp"
 )
 
 # Returns 0 if a 25 Hz result (downsample=5) already exists for this run.

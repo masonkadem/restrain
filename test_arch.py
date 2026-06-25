@@ -6,7 +6,6 @@ Tests feature extraction produces the right shape.
 import sys, math
 import numpy as np
 import torch
-import torch.nn as nn
 
 # ── tiny dims so CPU finishes fast ────────────────────────────────────────────
 SEQ   = 64
@@ -19,7 +18,8 @@ FS    = 125
 sys.path.insert(0, ".")
 from train import (
     BPTransformer, BPDualStreamTransformer, BPTriStreamTransformer,
-    BPS4, BPS4CrossChannel, extract_features, _feature_names,
+    BPNoiseRobustTransformer, BPS4, BPS4CrossChannel,
+    extract_features, _feature_names,
 )
 
 PASS = []; FAIL = []
@@ -33,26 +33,40 @@ def check(name, fn):
         FAIL.append(name)
         print(f"  FAIL  {name}: {e}")
 
-# ── models ────────────────────────────────────────────────────────────────────
 def fwd(model, x):
     out = model(x)
     assert out.shape == (B, 2), f"expected ({B},2) got {out.shape}"
 
-check("BPTransformer(ppg)",
-      lambda: fwd(BPTransformer(1, D, HEADS, LAYERS, SEQ), torch.randn(B, SEQ, 1)))
-check("BPTransformer(ppg+ecg+resp)",
-      lambda: fwd(BPTransformer(3, D, HEADS, LAYERS, SEQ), torch.randn(B, SEQ, 3)))
+# ── transformer ───────────────────────────────────────────────────────────────
+check("BPTransformer(1ch)",
+      lambda: fwd(BPTransformer(1, D, HEADS, LAYERS), torch.randn(B, SEQ, 1)))
+check("BPTransformer(3ch)",
+      lambda: fwd(BPTransformer(3, D, HEADS, LAYERS), torch.randn(B, SEQ, 3)))
+
+# ── dual / tri stream (sinusoidal PE, no seq_len arg) ─────────────────────────
 check("BPDualStreamTransformer",
-      lambda: fwd(BPDualStreamTransformer(D, HEADS, LAYERS, SEQ), torch.randn(B, SEQ, 2)))
+      lambda: fwd(BPDualStreamTransformer(D, HEADS, LAYERS), torch.randn(B, SEQ, 2)))
 check("BPTriStreamTransformer",
-      lambda: fwd(BPTriStreamTransformer(D, HEADS, LAYERS, SEQ), torch.randn(B, SEQ, 3)))
-check("BPS4(ppg)",
-      lambda: fwd(BPS4(1, D, 32, LAYERS), torch.randn(B, SEQ, 1)))
-check("BPS4(ppg+ecg+resp)",
-      lambda: fwd(BPS4(3, D, 32, LAYERS), torch.randn(B, SEQ, 3)))
-check("BPS4CrossChannel(ppg+ecg)",
+      lambda: fwd(BPTriStreamTransformer(D, HEADS, LAYERS), torch.randn(B, SEQ, 3)))
+
+# ── noise-robust (train mode → noisy path active; eval mode → no noise) ───────
+def _noise_robust_train():
+    m = BPNoiseRobustTransformer(2, D, HEADS, LAYERS); m.train()
+    fwd(m, torch.randn(B, SEQ, 2))
+def _noise_robust_eval():
+    m = BPNoiseRobustTransformer(2, D, HEADS, LAYERS); m.eval()
+    fwd(m, torch.randn(B, SEQ, 2))
+check("BPNoiseRobustTransformer(train)", _noise_robust_train)
+check("BPNoiseRobustTransformer(eval)",  _noise_robust_eval)
+
+# ── S4 variants ───────────────────────────────────────────────────────────────
+check("BPS4(1ch)",
+      lambda: fwd(BPS4(1, D, 16, LAYERS), torch.randn(B, SEQ, 1)))
+check("BPS4(3ch)",
+      lambda: fwd(BPS4(3, D, 16, LAYERS), torch.randn(B, SEQ, 3)))
+check("BPS4CrossChannel(2ch)",
       lambda: fwd(BPS4CrossChannel(2, D, 16, LAYERS, HEADS), torch.randn(B, SEQ, 2)))
-check("BPS4CrossChannel(ppg+ecg+resp)",
+check("BPS4CrossChannel(3ch)",
       lambda: fwd(BPS4CrossChannel(3, D, 16, LAYERS, HEADS), torch.randn(B, SEQ, 3)))
 
 # ── feature extraction ────────────────────────────────────────────────────────

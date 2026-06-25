@@ -313,12 +313,27 @@ def train_deep(model, train_loader, val_loader, test_loader, cfg, run_name, devi
 
 # ── Model definitions ─────────────────────────────────────────────────────────
 
-class BPTransformer(nn.Module):
-    def __init__(self, in_channels, d_model=128, n_heads=8, n_layers=4,
-                 seq_len=1875, dropout=0.1):
+class SinusoidalPE(nn.Module):
+    """Fixed sinusoidal positional encoding (Vaswani et al. 2017).
+    No learned parameters — generalizes to unseen sequence lengths."""
+    def __init__(self, d_model: int, max_len: int = 4096):
         super().__init__()
-        self.proj    = nn.Linear(in_channels, d_model)
-        self.pos_emb = nn.Embedding(seq_len, d_model)
+        pe  = torch.zeros(max_len, d_model)
+        pos = torch.arange(max_len).unsqueeze(1).float()
+        div = torch.exp(torch.arange(0, d_model, 2).float() * -(math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(pos * div)
+        pe[:, 1::2] = torch.cos(pos * div)
+        self.register_buffer("pe", pe)          # not a learnable parameter
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x + self.pe[:x.size(1)]          # (B, L, d_model)
+
+
+class BPTransformer(nn.Module):
+    def __init__(self, in_channels, d_model=128, n_heads=8, n_layers=4, dropout=0.1):
+        super().__init__()
+        self.proj = nn.Linear(in_channels, d_model)
+        self.pe   = SinusoidalPE(d_model)
         self.enc  = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(d_model, n_heads, d_model*4,
                                        dropout, batch_first=True, norm_first=True),
@@ -328,9 +343,7 @@ class BPTransformer(nn.Module):
             nn.Linear(d_model, 64), nn.GELU(), nn.Dropout(dropout), nn.Linear(64, 2))
 
     def forward(self, x):
-        B, L, _ = x.shape
-        x = self.proj(x) + self.pos_emb(torch.arange(L, device=x.device))
-        return self.head(self.enc(x).transpose(1, 2))
+        return self.head(self.enc(self.pe(self.proj(x))).transpose(1, 2))
 
 
 class _ModalFusionBlock(nn.Module):
@@ -360,14 +373,13 @@ class _ModalFusionBlock(nn.Module):
 
 
 class BPDualStreamTransformer(nn.Module):
-    """PPG+ECG: per-modality projection → 3 cross-attention fusion blocks → shared encoder.
+    """PPG+ECG: per-modality sinusoidal PE → 3 cross-attention fusion blocks → shared encoder.
     Requires channels=['ppg','ecg']."""
-    def __init__(self, d_model=128, n_heads=8, n_layers=2, seq_len=375,
-                 n_fusion_blocks=3, dropout=0.1):
+    def __init__(self, d_model=128, n_heads=8, n_layers=2, n_fusion_blocks=3, dropout=0.1):
         super().__init__()
         n_mod = 2
         self.proj   = nn.ModuleList([nn.Linear(1, d_model) for _ in range(n_mod)])
-        self.pos    = nn.ModuleList([nn.Embedding(seq_len, d_model) for _ in range(n_mod)])
+        self.pos    = nn.ModuleList([SinusoidalPE(d_model) for _ in range(n_mod)])
         self.fusion = nn.ModuleList([_ModalFusionBlock(n_mod, d_model, n_heads, dropout)
                                      for _ in range(n_fusion_blocks)])
         self.encoder = nn.TransformerEncoder(
@@ -379,8 +391,7 @@ class BPDualStreamTransformer(nn.Module):
             nn.Linear(d_model, 64), nn.GELU(), nn.Dropout(dropout), nn.Linear(64, 2))
 
     def forward(self, x):
-        pos  = torch.arange(x.shape[1], device=x.device)
-        embs = [self.proj[c](x[:, :, c:c+1]) + self.pos[c](pos) for c in range(2)]
+        embs = [self.pos[c](self.proj[c](x[:, :, c:c+1])) for c in range(2)]
         for block in self.fusion:
             embs = block(embs)
         fused = torch.stack(embs, dim=0).mean(0)
@@ -388,14 +399,13 @@ class BPDualStreamTransformer(nn.Module):
 
 
 class BPTriStreamTransformer(nn.Module):
-    """PPG+ECG+RESP: per-modality projection → 3 cross-attention fusion blocks → shared encoder.
+    """PPG+ECG+RESP: per-modality sinusoidal PE → 3 cross-attention fusion blocks → shared encoder.
     Requires channels=['ppg','ecg','resp']."""
-    def __init__(self, d_model=128, n_heads=8, n_layers=2, seq_len=375,
-                 n_fusion_blocks=3, dropout=0.1):
+    def __init__(self, d_model=128, n_heads=8, n_layers=2, n_fusion_blocks=3, dropout=0.1):
         super().__init__()
         n_mod = 3
         self.proj   = nn.ModuleList([nn.Linear(1, d_model) for _ in range(n_mod)])
-        self.pos    = nn.ModuleList([nn.Embedding(seq_len, d_model) for _ in range(n_mod)])
+        self.pos    = nn.ModuleList([SinusoidalPE(d_model) for _ in range(n_mod)])
         self.fusion = nn.ModuleList([_ModalFusionBlock(n_mod, d_model, n_heads, dropout)
                                      for _ in range(n_fusion_blocks)])
         self.encoder = nn.TransformerEncoder(
@@ -407,11 +417,78 @@ class BPTriStreamTransformer(nn.Module):
             nn.Linear(d_model, 64), nn.GELU(), nn.Dropout(dropout), nn.Linear(64, 2))
 
     def forward(self, x):
-        pos  = torch.arange(x.shape[1], device=x.device)
-        embs = [self.proj[c](x[:, :, c:c+1]) + self.pos[c](pos) for c in range(3)]
+        embs = [self.pos[c](self.proj[c](x[:, :, c:c+1])) for c in range(3)]
         for block in self.fusion:
             embs = block(embs)
         fused = torch.stack(embs, dim=0).mean(0)
+        return self.head(self.encoder(fused).transpose(1, 2))
+
+
+class _NoiseGenerator(nn.Module):
+    """On-the-fly physiological noise augmentation (training only).
+    Gaussian noise + baseline drift + motion artifact spikes + EMG — same
+    corruption types as NoiseRobustTransformer in the prior cross-site project."""
+    def __init__(self, fs: int = 25):
+        super().__init__()
+        self.fs = fs
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not self.training:
+            return x
+        B, L, C = x.shape
+        dev = x.device
+        out = x + torch.randn_like(x) * 0.10                          # Gaussian
+        t   = torch.linspace(0, L / self.fs, L, device=dev)
+        out = out + 0.08 * torch.sin(2 * math.pi * 0.1 * t).view(1, L, 1)  # drift
+        mask = torch.rand(B, L, C, device=dev) < 0.01                 # motion spikes
+        out = out + torch.randn_like(x) * 0.5 * mask.float()
+        out = out + torch.randn_like(x) * 0.03                        # EMG
+        return out
+
+
+class BPNoiseRobustTransformer(nn.Module):
+    """Clean-vs-noisy dual stream with bidirectional cross-attention — adapted from
+    NoiseRobustTransformer in the prior cross-site project.
+
+    During training the noise generator corrupts a copy of the input; the
+    _ModalFusionBlock ×3 forces the model to reconcile clean and noisy representations,
+    acting as structured on-the-fly data augmentation.  At test time noisy = clean so
+    the architecture degenerates to a single encoder path with no overhead.
+
+    Works with any number of input channels.
+    """
+    def __init__(self, n_channels, d_model=128, n_heads=8, n_layers=2,
+                 n_fusion_blocks=3, dropout=0.1):
+        super().__init__()
+        self.noise     = _NoiseGenerator()
+        # Separate projections so clean/noisy can learn different representations
+        self.clean_proj = nn.Linear(n_channels, d_model)
+        self.noisy_proj = nn.Linear(n_channels, d_model)
+        self.pe         = SinusoidalPE(d_model)
+        # Bidirectional cross-attention: [clean, noisy] each attends to the other
+        self.fusion     = nn.ModuleList([
+            _ModalFusionBlock(2, d_model, n_heads, dropout)
+            for _ in range(n_fusion_blocks)])
+        # Adaptive gate: learn how much to trust clean vs noisy at each position
+        self.gate       = nn.Sequential(
+            nn.Linear(d_model * 2, d_model), nn.GELU(),
+            nn.Linear(d_model, 1), nn.Sigmoid())
+        self.encoder    = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model, n_heads, d_model * 4, dropout,
+                                       batch_first=True, norm_first=True),
+            num_layers=n_layers)
+        self.head       = nn.Sequential(
+            nn.AdaptiveAvgPool1d(1), nn.Flatten(),
+            nn.Linear(d_model, 64), nn.GELU(), nn.Dropout(dropout), nn.Linear(64, 2))
+
+    def forward(self, x):
+        noisy = self.noise(x)
+        clean = self.pe(self.clean_proj(x))
+        noisy = self.pe(self.noisy_proj(noisy))
+        for block in self.fusion:
+            [clean, noisy] = block([clean, noisy])
+        w     = self.gate(torch.cat([clean, noisy], dim=-1))   # (B, L, 1)
+        fused = w * clean + (1 - w) * noisy
         return self.head(self.encoder(fused).transpose(1, 2))
 
 
@@ -847,7 +924,7 @@ def main():
     parser = argparse.ArgumentParser(description="BP estimation experiment runner")
     parser.add_argument("--model",    required=True,
                         choices=["transformer", "dual_stream", "tri_stream",
-                                 "s4", "s4_cross", "lgbm"])
+                                 "noise_robust", "s4", "s4_cross", "lgbm"])
     parser.add_argument("--channels", required=True,
                         help="Comma-separated channels, e.g. ppg,ecg,resp")
     parser.add_argument("--gpu_profile", default="3080",
@@ -964,15 +1041,15 @@ def main():
         train_loader, val_loader, test_loader, n_ch = make_loaders(
             X_train, y_train, X_val, y_val, X_test, y_test, channels, cfg)
 
-        active_seq_len = cfg["seq_len"]   # reflects downsample if applied
         if args.model == "transformer":
-            model = BPTransformer(n_ch, d_model, n_heads, n_layers, active_seq_len, 0.1).to(device)
+            model = BPTransformer(n_ch, d_model, n_heads, n_layers, 0.1).to(device)
         elif args.model == "dual_stream":
-            model = BPDualStreamTransformer(d_model, n_heads, n_layers, active_seq_len,
-                                            dropout=0.1).to(device)
+            model = BPDualStreamTransformer(d_model, n_heads, n_layers, dropout=0.1).to(device)
         elif args.model == "tri_stream":
-            model = BPTriStreamTransformer(d_model, n_heads, n_layers, active_seq_len,
-                                           dropout=0.1).to(device)
+            model = BPTriStreamTransformer(d_model, n_heads, n_layers, dropout=0.1).to(device)
+        elif args.model == "noise_robust":
+            model = BPNoiseRobustTransformer(n_ch, d_model, n_heads, n_layers,
+                                             dropout=0.1).to(device)
         elif args.model == "s4":
             model = BPS4(n_ch, d_model, cfg["d_state"], n_layers, 0.1).to(device)
         elif args.model == "s4_cross":
