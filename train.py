@@ -154,16 +154,6 @@ def make_loaders(X_tr, y_tr, X_va, y_va, X_te, y_te, channels, cfg):
     return tr, va, te, len(ch_idx)
 
 
-def cosine_lr(opt, epoch, total, warmup, base_lr):
-    if epoch < warmup:
-        lr = base_lr * (epoch + 1) / warmup
-    else:
-        p  = (epoch - warmup) / (total - warmup)
-        lr = base_lr * (1 + math.cos(math.pi * p)) / 2
-    for pg in opt.param_groups: pg["lr"] = lr
-    return lr
-
-
 @torch.no_grad()
 def evaluate(model, loader, device):
     model.eval()
@@ -262,6 +252,19 @@ def _save_checkpoint(name, weights, cfg, metrics, n_params, extra=None):
         json.dump(meta, fh, indent=2)
 
 
+def cosine_lr(opt, epoch, t_max, warmup, base_lr, min_lr=1e-6):
+    """Linear warmup then cosine decay to min_lr over t_max epochs.
+    Past t_max the LR is clamped at min_lr (safe when epochs is just a high cap)."""
+    if epoch < warmup:
+        lr = base_lr * (epoch + 1) / warmup
+    else:
+        p  = min(1.0, (epoch - warmup) / max(1, t_max - warmup))
+        lr = min_lr + (base_lr - min_lr) * (1 + math.cos(math.pi * p)) / 2
+    for pg in opt.param_groups:
+        pg["lr"] = lr
+    return lr
+
+
 def train_deep(model, train_loader, val_loader, test_loader, cfg, run_name, device):
     seed_everything(cfg["seed"])
     opt      = torch.optim.AdamW(model.parameters(), lr=cfg["lr"],
@@ -269,6 +272,20 @@ def train_deep(model, train_loader, val_loader, test_loader, cfg, run_name, devi
     loss_fn  = nn.L1Loss()
     n_params = sum(p.numel() for p in model.parameters())
     use_wb   = WANDB_AVAILABLE and bool(os.environ.get("WANDB_API_KEY"))
+
+    # LR schedule — selectable:
+    #   "cosine"  : warmup then cosine decay over lr_t_max epochs (the setup that gave
+    #               the best S4-cross result so far).
+    #   "plateau" : warmup then ReduceLROnPlateau on val MAE (adapts to unknown horizon).
+    sched_name = cfg.get("scheduler", "cosine")
+    base_lr    = cfg["lr"]
+    warmup     = cfg.get("warmup_epochs", 5)
+    t_max      = cfg.get("lr_t_max", 100)
+    plateau    = None
+    if sched_name == "plateau":
+        plateau = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            opt, mode="min", factor=cfg.get("lr_factor", 0.5),
+            patience=cfg.get("lr_patience", 8), min_lr=1e-6)
 
     run = None
     if use_wb:
@@ -298,7 +315,14 @@ def train_deep(model, train_loader, val_loader, test_loader, cfg, run_name, devi
     for epoch in range(cfg["epochs"]):
         epoch_start = time.time()
         model.train()
-        lr = cosine_lr(opt, epoch, cfg["epochs"], cfg["warmup_epochs"], cfg["lr"])
+        # Set this epoch's LR.
+        if sched_name == "cosine":
+            lr = cosine_lr(opt, epoch, t_max, warmup, base_lr)
+        else:  # plateau: manual warmup, then scheduler.step() handles decay
+            if epoch < warmup:
+                for pg in opt.param_groups:
+                    pg["lr"] = base_lr * (epoch + 1) / warmup
+            lr = opt.param_groups[0]["lr"]
         total_loss, total_gnorm, n_batches = 0.0, 0.0, 0
         for x, y in train_loader:
             x, y = x.to(device), y.to(device)
@@ -346,10 +370,14 @@ def train_deep(model, train_loader, val_loader, test_loader, cfg, run_name, devi
                 wandb.log({"early_stop_epoch": epoch + 1})
             break
 
-        if (epoch + 1) % max(1, cfg["epochs"] // 10) == 0:
+        # Step the plateau scheduler on val MAE (after warmup is finished).
+        if plateau is not None and epoch >= warmup:
+            plateau.step(val_mae)
+
+        if (epoch + 1) % 5 == 0:
             elapsed = (time.time() - train_start) / 60
-            print(f"[{run_name}] ep {epoch+1:3d}/{cfg['epochs']} | "
-                  f"loss={avg_loss:.4f} | gnorm={avg_gnorm:.3f} | "
+            print(f"[{run_name}] ep {epoch+1:4d} | "
+                  f"loss={avg_loss:.4f} | gnorm={avg_gnorm:.3f} | lr={lr:.2e} | "
                   f"MAE SBP={val_m['mae_sbp']:.2f} DBP={val_m['mae_dbp']:.2f} mmHg | "
                   f"{epoch_time:.1f}s/ep | {elapsed:.1f}min elapsed")
 
@@ -1039,7 +1067,18 @@ def main():
                         help="S4 state dimension (default 64; try 128/256 to scale up)")
     parser.add_argument("--lr",                  type=float, default=1e-4)
     parser.add_argument("--weight_decay",        type=float, default=1e-3)
-    parser.add_argument("--early_stop_patience", type=int,   default=20,
+    parser.add_argument("--scheduler",           default="cosine",
+                        choices=["cosine", "plateau"],
+                        help="LR schedule: cosine (warmup+cosine decay) or plateau (ReduceLROnPlateau)")
+    parser.add_argument("--warmup_epochs",       type=int,   default=5,
+                        help="Linear LR warmup length")
+    parser.add_argument("--lr_t_max",            type=int,   default=100,
+                        help="Cosine schedule horizon in epochs (cosine only)")
+    parser.add_argument("--lr_factor",           type=float, default=0.5,
+                        help="ReduceLROnPlateau: multiply LR by this on plateau")
+    parser.add_argument("--lr_patience",         type=int,   default=8,
+                        help="ReduceLROnPlateau: epochs of no val improvement before LR drop")
+    parser.add_argument("--early_stop_patience", type=int,   default=25,
                         help="Stop if val MAE doesn't improve for N epochs (0=disabled)")
     parser.add_argument("--seed",                type=int,   default=42)
     parser.add_argument("--downsample",   type=int,   default=1, metavar="F",
@@ -1055,7 +1094,7 @@ def main():
         parser.error("--model tri_stream requires exactly --channels ppg,ecg,resp")
 
     seq_len, seg_start, d_model, n_heads, n_layers, batch_size = _PROFILES[args.gpu_profile]
-    epochs     = args.epochs     or (3  if args.smoke else 100)
+    epochs     = args.epochs     or (3  if args.smoke else 999)  # 999 = safety cap; early stop decides
     batch_size = args.batch_size or (32 if args.smoke else batch_size)
     d_model    = args.d_model    or d_model
     n_heads    = args.n_heads    or n_heads
@@ -1076,9 +1115,13 @@ def main():
         "dropout":              0.1,
         "lr":                   args.lr,
         "weight_decay":         args.weight_decay,
+        "scheduler":            args.scheduler,
+        "warmup_epochs":        min(args.warmup_epochs, max(1, epochs // 2)),
+        "lr_t_max":             args.lr_t_max,
+        "lr_factor":            args.lr_factor,
+        "lr_patience":          args.lr_patience,
         "early_stop_patience":  args.early_stop_patience,
         "epochs":               epochs,
-        "warmup_epochs":        max(1, epochs // 10),
         "lgbm_n_estimators":    50  if args.smoke else 2000,
         "lgbm_lr":              0.1 if args.smoke else 0.03,
         "downsample":           args.downsample,

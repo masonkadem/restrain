@@ -16,11 +16,12 @@ DOWNSAMPLE=5        # 125 → 25 Hz
 CUDA_DEVICE="0"
 SEED=42
 DATA_ROOT="$(cd "$(dirname "$0")" && pwd)"
-WANDB_PROJECT="bp-estimation"
+WANDB_PROJECT="bp-estimation-v2"
 EXTRA="$*"
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export PYTHONIOENCODING=utf-8    # prevent cp1252 errors with torchinfo/wandb on Windows
+export WANDB_PROJECT             # so log_sweep_summary.py / eda.py use the same project
 
 if [[ "${CONDA_DEFAULT_ENV:-}" != "bp" ]]; then
     source "$(conda info --base)/etc/profile.d/conda.sh"
