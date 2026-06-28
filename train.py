@@ -485,7 +485,7 @@ class _ModalFusionBlock(nn.Module):
         n, out = len(embs), []
         for i in range(n):
             others   = torch.cat([embs[j] for j in range(n) if j != i], dim=1)
-            attended, _ = self.cross_attn[i](embs[i], others, others)
+            attended, _ = self.cross_attn[i](embs[i], others, others, need_weights=False)
             x = self.norms[i](embs[i] + attended)
             out.append(x + self.ffns[i](x))
         return out
@@ -1198,7 +1198,7 @@ def main():
             model = BPS4(n_ch, d_model, cfg["d_state"], n_layers, 0.1).to(device)
         elif args.model == "s4_cross":
             model = BPS4CrossChannel(n_ch, d_model, cfg["d_state"], n_layers,
-                                     n_heads, 0.1).to(device)
++                                     n_heads, dropout=0.1).to(device)
 
         print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
         metrics = train_deep(model, train_loader, val_loader, test_loader, cfg, run_name, device)
