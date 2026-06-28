@@ -612,35 +612,51 @@ class BPNoiseRobustTransformer(nn.Module):
 
 
 class S4DLayer(nn.Module):
-    def __init__(self, d_model, d_state=64, dropout=0.0):
+    def __init__(self, d_model, d_state=64, dropout=0.0, bidirectional=True):
         super().__init__()
+        self.bidirectional = bidirectional
         N = d_state // 2
         self.log_dt = nn.Parameter(torch.rand(d_model) * 2 - 4)
         n = torch.arange(N, dtype=torch.float32)
         self.A_real = nn.Parameter(-0.5 * torch.ones(d_model, N))
-        self.A_imag = nn.Parameter(math.pi * n.unsqueeze(0).expand(d_model, N))
+        self.A_imag = nn.Parameter(math.pi * n.unsqueeze(0).expand(d_model, N).clone())
         self.B_re = nn.Parameter(torch.randn(d_model, N) * 0.5)
         self.B_im = nn.Parameter(torch.randn(d_model, N) * 0.5)
         self.C_re = nn.Parameter(torch.randn(d_model, N) * 0.5)
         self.C_im = nn.Parameter(torch.randn(d_model, N) * 0.5)
         self.D = nn.Parameter(torch.ones(d_model))
-        self.norm = nn.LayerNorm(d_model); self.drop = nn.Dropout(dropout)
+        # the two pieces the original was missing:
+        self.activation = nn.GELU()              # nonlinearity
+        self.out_proj   = nn.Linear(d_model, d_model)  # cross-feature mixing
+        self.norm = nn.LayerNorm(d_model)
+        self.drop = nn.Dropout(dropout)
 
     def _kernel(self, L):
         dt = torch.exp(self.log_dt)
         A  = -torch.exp(self.A_real) + 1j * self.A_imag
-        B  = self.B_re + 1j * self.B_im; C = self.C_re + 1j * self.C_im
+        B  = self.B_re + 1j * self.B_im
+        C  = self.C_re + 1j * self.C_im
         A_bar = torch.exp(A * dt.unsqueeze(-1))
         B_bar = (A_bar - 1) / (A + 1e-8) * B
         l = torch.arange(L, device=dt.device, dtype=torch.float32)
         return 2 * (C.unsqueeze(-1) * A_bar.unsqueeze(-1)**l * B_bar.unsqueeze(-1)).real.sum(1)
 
-    def forward(self, x):
-        B_sz, L, H = x.shape; u = x.transpose(1, 2); n = 2 * L
-        y = torch.fft.irfft(
-            torch.fft.rfft(self._kernel(L), n=n).unsqueeze(0) * torch.fft.rfft(u, n=n), n=n
-        )[:, :, :L]
-        return self.drop(self.norm((y + self.D.unsqueeze(-1) * u).transpose(1, 2) + x))
+    def _conv(self, u, L):                       # u: (B, H, L) -> (B, H, L)
+        n = 2 * L
+        K = self._kernel(L)
+        return torch.fft.irfft(
+            torch.fft.rfft(K, n=n).unsqueeze(0) * torch.fft.rfft(u, n=n), n=n)[:, :, :L]
+
+    def forward(self, x):                        # x: (B, L, H)
+        L = x.size(1)
+        u = x.transpose(1, 2)                    # (B, H, L)
+        y = self._conv(u, L)
+        if self.bidirectional:
+            y = y + self._conv(u.flip(-1), L).flip(-1)
+        y = y + self.D.unsqueeze(-1) * u         # skip connection
+        y = y.transpose(1, 2)                    # (B, L, H)
+        y = self.out_proj(self.activation(y))    # nonlinearity + mix d_model
+        return self.norm(x + self.drop(y))       # residual + norm
 
 
 class BPS4(nn.Module):
