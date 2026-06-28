@@ -41,18 +41,18 @@ EXPERIMENTS=(
     "lgbm_ppg_ecg_resp          | lgbm        | ppg,ecg,resp |"
     # S4 cross-channel — best model so far: test BOTH schedulers head-to-head
     "s4_cross_ppg_ecg_cosine    | s4_cross    | ppg,ecg      | --scheduler cosine"
-    "s4_cross_ppg_ecg_plateau   | s4_cross    | ppg,ecg      | --scheduler plateau"
-    "s4_cross_ppg_ecg_resp      | s4_cross    | ppg,ecg,resp | --scheduler cosine"
+    # "s4_cross_ppg_ecg_plateau   | s4_cross    | ppg,ecg      | --scheduler plateau"
+    # "s4_cross_ppg_ecg_resp      | s4_cross    | ppg,ecg,resp | --scheduler cosine"
     # Other deep models (cosine default)
-    "dual_stream_ppg_ecg        | dual_stream | ppg,ecg      |"
-    "tri_stream_ppg_ecg_resp    | tri_stream  | ppg,ecg,resp |"
-    "noise_robust_ppg_ecg       | noise_robust| ppg,ecg      |"
-    "noise_robust_ppg_ecg_resp  | noise_robust| ppg,ecg,resp |"
-    "s4_ppg_ecg                 | s4          | ppg,ecg      |"
-    "s4_ppg_ecg_resp            | s4          | ppg,ecg,resp |"
-    "s4_ppg                     | s4          | ppg          |"
-    "transformer_ppg            | transformer | ppg          |"
-    "transformer_ppg_ecg_resp   | transformer | ppg,ecg,resp |"
+    # "dual_stream_ppg_ecg        | dual_stream | ppg,ecg      |"
+    # "tri_stream_ppg_ecg_resp    | tri_stream  | ppg,ecg,resp |"
+    # "noise_robust_ppg_ecg       | noise_robust| ppg,ecg      |"
+    # "noise_robust_ppg_ecg_resp  | noise_robust| ppg,ecg,resp |"
+    # "s4_ppg_ecg                 | s4          | ppg,ecg      |"
+    # "s4_ppg_ecg_resp            | s4          | ppg,ecg,resp |"
+    # "s4_ppg                     | s4          | ppg          |"
+    # "transformer_ppg            | transformer | ppg          |"
+    # "transformer_ppg_ecg_resp   | transformer | ppg,ecg,resp |"
 )
 
 # Returns 0 if a result for the CURRENT architecture version already exists.
