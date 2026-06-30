@@ -75,8 +75,12 @@ warnings.filterwarnings("ignore")
 _PROFILES = {
     #              seq_len  seg_start  d_model  n_heads  n_layers  batch
     "fast":       ( 1000,    375,       64,       4,       2,        64),
-    "3080":       ( 1875,    375,      128,       8,       4,        32),
+    # 3080 now uses the FULL 30 s window (3750 @125Hz). With --downsample 5 that is
+    # 750 samples @25Hz, which fits the 3080 for the dual_stream / s4_cross models.
+    "3080":       ( 3750,      0,      128,       8,       4,        32),
     "h100":       ( 3750,      0,      256,       8,       6,        32),
+    # PulseDB segments are 10 s @ 125 Hz = 1250 samples — fits a 3080 easily.
+    "pulsedb":    ( 1250,      0,      128,       8,       4,        64),
 }
 
 FS          = 125
@@ -107,9 +111,14 @@ def _load(root, subject, modality):
 
 
 def extract_segments(subjects, root, seq_len, seg_start):
+    """Returns (sigs, lbls, groups) with RAW (un-normalized) signals.
+    Normalization is applied later by normalize_signals() so the scaling mode can
+    preserve within-subject pulse amplitude (a BP correlate).
+    groups[i] is the subject index for segment i — required so the calibration
+    pipeline can pick per-subject calibration segments and never mix subjects."""
     sl = slice(seg_start, seg_start + seq_len)
-    sigs, lbls, missing = [], [], 0
-    for subj in subjects:
+    sigs, lbls, groups, missing = [], [], [], 0
+    for subj_idx, subj in enumerate(subjects):
         ppg_raw = _load(root, subj, "ppg")
         lbl_raw = _load(root, subj, "labels")
         if ppg_raw is None or lbl_raw is None:
@@ -120,36 +129,263 @@ def extract_segments(subjects, root, seq_len, seg_start):
             for raw in raws:
                 if raw is not None:
                     s = raw[j][sl].astype(np.float32)
-                    s = (s - s.mean()) / (s.std() + 1e-8)
                 else:
                     s = np.zeros(seq_len, dtype=np.float32)
                 channels.append(s)
             sigs.append(np.stack(channels, axis=-1))
             lbls.append(lbl_raw[j].astype(np.float32))
+            groups.append(subj_idx)
     if missing:
         print(f"Warning: {missing} subjects skipped (missing PPG/labels)")
-    return np.array(sigs), np.array(lbls)
+    return np.array(sigs), np.array(lbls), np.array(groups, dtype=np.int64)
+
+
+def normalize_signals(X, groups, mode="segment", k_cal=0):
+    """Normalize (N, L, C).  Baseline is ALWAYS removed per-segment (kills drift);
+    the SCALE is what differs, controlling whether within-subject pulse-amplitude
+    differences survive:
+      segment : divide each segment by its own std   (legacy — discards amplitude)
+      subject : divide a subject's segments by that subject's std over ALL segments
+      calib   : divide by the subject's std over its first k_cal calibration segments
+    'subject'/'calib' keep relative amplitude across a subject's segments, so a
+    bigger pulse in one segment stays bigger — recovering a real BP cue."""
+    X = X.astype(np.float32, copy=True)
+    X -= X.mean(axis=1, keepdims=True)                      # per-segment centering
+    if mode == "segment":
+        X /= (X.std(axis=1, keepdims=True) + 1e-8)
+        return X
+    for g, idxs in _subject_segment_index(groups).items():
+        idxs = np.asarray(idxs)
+        stat_idx = idxs[:k_cal] if (mode == "calib" and k_cal > 0) else idxs
+        std = X[stat_idx].std(axis=(0, 1), keepdims=True) + 1e-8   # (1,1,C) per channel
+        X[idxs] = X[idxs] / std
+    return X
+
+
+# ── PulseDB loader ────────────────────────────────────────────────────────────
+
+def load_pulsedb_splits(dbdata_root, val_frac=0.2, seed=42, test_protocol="aami"):
+    """Load PulseDB VitalDB .mat files and return (train, val, test) tuples.
+
+    Each tuple is (X, y, groups) where:
+      X      : (N, 1250, 3) float32 — PPG/ECG/ABP, full 10-second segments
+      y      : (N, 2)       float32 — [SBP, DBP] in mmHg
+      groups : (N,)         int64   — integer subject index for calibration splits
+
+    test_protocol selects which pre-defined test file to use:
+      "aami"      : VitalDB_AAMI_Test_Subset.mat (666 segs, AAMI-compliant subjects)
+      "cal_free"  : VitalDB_CalFree_Test_Subset.mat (57 600 segs, no cal anchor)
+      "cal_based" : VitalDB_CalBased_Test_Subset.mat (51 720 segs, use --calibration K)
+
+    For the AAMI cal-based protocol you can additionally supply
+    --calibration K so that the first K segments per test subject from
+    VitalDB_AAMI_Cal_Subset.mat are used as the per-subject BP anchor.
+    Pass test_protocol="aami_cal" to automatically prepend those cal
+    segments to each test subject's data before --calibration K splits them.
+
+    Subject IDs in PulseDB look like 'p000001_1' (patient_session).  We strip
+    the session suffix when assigning train/val splits so all sessions of a
+    patient land in the same partition, but keep the full ID as the group key
+    for calibration (each session is its own BP anchor context).
+    """
+    try:
+        from mat73 import loadmat
+    except ImportError:
+        raise ImportError("mat73 is required for PulseDB data: pip install mat73")
+
+    _TEST_FILES = {
+        "aami":      "VitalDB_AAMI_Test_Subset.mat",
+        "aami_cal":  "VitalDB_AAMI_Test_Subset.mat",   # cal segments prepended below
+        "cal_free":  "VitalDB_CalFree_Test_Subset.mat",
+        "cal_based": "VitalDB_CalBased_Test_Subset.mat",
+    }
+    if test_protocol not in _TEST_FILES:
+        raise ValueError(f"test_protocol must be one of {list(_TEST_FILES)}")
+
+    def _parse(path):
+        print(f"  Loading {os.path.basename(path)} ...")
+        sub = loadmat(path)["Subset"]
+        # Signals: (N, 3, 1250) channel-first -> (N, 1250, 3) time-first
+        X = np.array(sub["Signals"], dtype=np.float32).transpose(0, 2, 1)
+        y = np.stack([
+            np.array(sub["SBP"], dtype=np.float32),
+            np.array(sub["DBP"], dtype=np.float32),
+        ], axis=1)
+        raw_ids = sub["Subject"]
+        ids = [s[0] if isinstance(s, list) else str(s) for s in raw_ids]
+        return X, y, ids
+
+    X_all, y_all, ids_all = _parse(os.path.join(dbdata_root, "VitalDB_Train_Subset.mat"))
+    test_file = os.path.join(dbdata_root, _TEST_FILES[test_protocol])
+    X_te, y_te, ids_te = _parse(test_file)
+
+    # For AAMI cal-based: prepend cal segments per subject so --calibration K
+    # uses the PulseDB-defined calibration data rather than test segments.
+    if test_protocol == "aami_cal":
+        X_cal, y_cal, ids_cal = _parse(
+            os.path.join(dbdata_root, "VitalDB_AAMI_Cal_Subset.mat"))
+        # Sort cal then test so group-aware split picks cal first
+        X_te  = np.concatenate([X_cal,  X_te],  axis=0)
+        y_te  = np.concatenate([y_cal,  y_te],  axis=0)
+        ids_te = ids_cal + ids_te
+
+    # Base patient ID (strip '_N' session suffix) for subject-level train/val split
+    base_all = np.array([sid.rsplit("_", 1)[0] for sid in ids_all])
+    unique_patients = np.unique(base_all)
+    rng = np.random.default_rng(seed)
+    rng.shuffle(unique_patients)
+    n_val = max(1, int(len(unique_patients) * val_frac))
+    val_patients = set(unique_patients[:n_val])
+
+    train_mask = np.array([p not in val_patients for p in base_all])
+
+    # Integer group index: one per unique full subject ID (patient+session)
+    all_full_ids = list(dict.fromkeys(ids_all + ids_te))  # ordered-unique
+    id_to_int = {s: i for i, s in enumerate(all_full_ids)}
+    grp_all = np.array([id_to_int[s] for s in ids_all], dtype=np.int64)
+    grp_te  = np.array([id_to_int[s] for s in ids_te],  dtype=np.int64)
+
+    X_tr = X_all[train_mask];  y_tr = y_all[train_mask];  grp_tr = grp_all[train_mask]
+    X_va = X_all[~train_mask]; y_va = y_all[~train_mask]; grp_va = grp_all[~train_mask]
+
+    # For AAMI cal-based protocol: also return cal data separately so
+    # pulsedb_calbased_eval() can apply the per-subject offset correction.
+    cal_data = None
+    if test_protocol == "aami_cal":
+        X_cal, y_cal, ids_cal = _parse(
+            os.path.join(dbdata_root, "VitalDB_AAMI_Cal_Subset.mat"))
+        grp_cal = np.array([id_to_int.get(s, -1) for s in ids_cal], dtype=np.int64)
+        cal_data = (X_cal, y_cal, grp_cal)
+
+    n_tr_patients = len(unique_patients) - n_val
+    print(f"  PulseDB split: {len(X_tr):,} train segs ({n_tr_patients} patients) | "
+          f"{len(X_va):,} val segs ({n_val} patients) | {len(X_te):,} test segs")
+    return (X_tr, y_tr, grp_tr), (X_va, y_va, grp_va), (X_te, y_te, grp_te), cal_data
+
+
+def pulsedb_calbased_eval(model, X_cal, y_cal, grp_cal,
+                          X_te, y_te, grp_te, ch_idx, device):
+    """Post-hoc offset calibration following PulseDB's AAMI cal-based protocol.
+
+    For each test subject:
+      1. Run the model on their calibration segments from AAMI_Cal_Subset.
+      2. Compute the per-subject mean bias: offset = mean(true_cal - pred_cal).
+      3. Add that offset to the model's test-segment predictions.
+
+    This corrects the subject-level BP offset without modifying the model or
+    conditioning on raw BP values during training — matching the PulseDB protocol.
+    """
+    model.eval()
+
+    def _predict_array(X, grp):
+        """Run inference on a numpy array; return (preds, targets, groups)."""
+        sel = np.ascontiguousarray(X[:, :, ch_idx])
+        ds  = BPDataset(sel, np.zeros((len(sel), 2), np.float32))
+        loader = DataLoader(ds, batch_size=256, shuffle=False, num_workers=0)
+        preds = []
+        with torch.no_grad():
+            for x, _, cal in loader:
+                preds.append(model(x.to(device)).cpu().numpy())
+        return np.concatenate(preds)
+
+    pred_cal = _predict_array(X_cal, grp_cal)   # (N_cal, 2)
+    pred_te  = _predict_array(X_te,  grp_te)    # (N_te,  2)
+
+    # Per-subject offset from calibration segments
+    subj_offset = {}
+    for subj in np.unique(grp_cal):
+        mask = grp_cal == subj
+        subj_offset[int(subj)] = (y_cal[mask] - pred_cal[mask]).mean(axis=0)  # (2,)
+
+    # Apply offset to test predictions
+    pred_te_cal = pred_te.copy()
+    for subj in np.unique(grp_te):
+        mask = grp_te == subj
+        if int(subj) in subj_offset:
+            pred_te_cal[mask] += subj_offset[int(subj)]
+
+    out = {}
+    for i, t in enumerate(["sbp", "dbp"]):
+        err_raw = pred_te[:, i]  - y_te[:, i]
+        err_cal = pred_te_cal[:, i] - y_te[:, i]
+        out[f"uncal_mae_{t}"]  = float(np.abs(err_raw).mean())
+        out[f"cal_mae_{t}"]    = float(np.abs(err_cal).mean())
+        out[f"cal_me_{t}"]     = float(err_cal.mean())
+        out[f"cal_sd_{t}"]     = float(err_cal.std())
+    return out, pred_te_cal, y_te
+
+
+# ── Calibration ───────────────────────────────────────────────────────────────
+# Subject-independent paradigm WITH a per-subject calibration anchor:
+#   * train/val/test SUBJECTS stay disjoint (no identity leakage),
+#   * within every subject the first k_cal segments are the "cuff calibration",
+#   * the reference BP_cal = mean SBP/DBP over those calibration segments,
+#   * models predict the remaining (query) segments, conditioned on BP_cal.
+# This removes the dominant between-subject BP offset — which 30 s of amplitude-
+# normalized morphology cannot recover — and isolates the within-subject changes
+# that pulse-transit-time genuinely tracks.
+
+def _subject_segment_index(groups):
+    """Map each subject id -> ordered list of its global segment indices."""
+    order = {}
+    for i, g in enumerate(groups):
+        order.setdefault(int(g), []).append(i)
+    return order
+
+
+def calibration_split(groups, k_cal):
+    """Return (cal_idx_per_subj, query_idx).
+    Subjects with <= k_cal segments are dropped (no query segment would remain)."""
+    order = _subject_segment_index(groups)
+    cal_idx_per_subj, query_idx = {}, []
+    for g, idxs in order.items():
+        if len(idxs) <= k_cal:
+            continue
+        cal_idx_per_subj[g] = idxs[:k_cal]
+        query_idx.extend(idxs[k_cal:])
+    return cal_idx_per_subj, np.array(sorted(query_idx), dtype=np.int64)
+
+
+def apply_calibration(X, y, groups, k_cal):
+    """Build the query set and its per-query calibration anchor BP_cal.
+    Returns Xq, yq (absolute labels), gq (subject ids), bp_cal (Nq, 2)."""
+    cal_idx_per_subj, q_idx = calibration_split(groups, k_cal)
+    bp_cal_by_subj = {g: y[idxs].mean(axis=0) for g, idxs in cal_idx_per_subj.items()}
+    gq     = groups[q_idx]
+    bp_cal = np.stack([bp_cal_by_subj[int(g)] for g in gq]).astype(np.float32)
+    return X[q_idx], y[q_idx], gq, bp_cal
 
 
 # ── PyTorch utilities ─────────────────────────────────────────────────────────
 
 class BPDataset(Dataset):
-    def __init__(self, X, y):
+    def __init__(self, X, y, cal=None):
         self.X = torch.from_numpy(X)
         self.y = torch.from_numpy(y)
+        # cal is the (already normalized) calibration conditioning vector; an
+        # (N, 0) array means "no calibration" so legacy models ignore it.
+        if cal is None:
+            cal = np.zeros((len(X), 0), dtype=np.float32)
+        self.cal = torch.from_numpy(np.ascontiguousarray(cal.astype(np.float32)))
     def __len__(self):  return len(self.X)
-    def __getitem__(self, i): return self.X[i], self.y[i]
+    def __getitem__(self, i): return self.X[i], self.y[i], self.cal[i]
 
 
-def make_loaders(X_tr, y_tr, X_va, y_va, X_te, y_te, channels, cfg):
+def _forward(model, x, cal):
+    """Call model with calibration conditioning only when it is present."""
+    return model(x, cal) if cal.shape[1] > 0 else model(x)
+
+
+def make_loaders(X_tr, y_tr, X_va, y_va, X_te, y_te, channels, cfg,
+                 cal_tr=None, cal_va=None, cal_te=None):
     ch_idx = [CHANNEL_MAP[c] for c in channels]
     sel    = lambda X: np.ascontiguousarray(X[:, :, ch_idx])
     g = torch.Generator(); g.manual_seed(cfg["seed"])
-    tr = DataLoader(BPDataset(sel(X_tr), y_tr), cfg["batch_size"],
+    tr = DataLoader(BPDataset(sel(X_tr), y_tr, cal_tr), cfg["batch_size"],
                     shuffle=True,  num_workers=0, generator=g)
-    va = DataLoader(BPDataset(sel(X_va), y_va), cfg["batch_size"],
+    va = DataLoader(BPDataset(sel(X_va), y_va, cal_va), cfg["batch_size"],
                     shuffle=False, num_workers=0)
-    te = DataLoader(BPDataset(sel(X_te), y_te), cfg["batch_size"],
+    te = DataLoader(BPDataset(sel(X_te), y_te, cal_te), cfg["batch_size"],
                     shuffle=False, num_workers=0)
     return tr, va, te, len(ch_idx)
 
@@ -158,16 +394,19 @@ def make_loaders(X_tr, y_tr, X_va, y_va, X_te, y_te, channels, cfg):
 def evaluate(model, loader, device):
     model.eval()
     preds, tgts = [], []
-    for x, y in loader:
-        preds.append(model(x.to(device)).cpu().numpy())
+    for x, y, cal in loader:
+        preds.append(_forward(model, x.to(device), cal.to(device)).cpu().numpy())
         tgts.append(y.numpy())
     preds = np.concatenate(preds); tgts = np.concatenate(tgts)
-    return {
-        "mae_sbp":  mean_absolute_error(tgts[:, 0], preds[:, 0]),
-        "mae_dbp":  mean_absolute_error(tgts[:, 1], preds[:, 1]),
-        "rmse_sbp": mean_squared_error(tgts[:, 0], preds[:, 0]) ** 0.5,
-        "rmse_dbp": mean_squared_error(tgts[:, 1], preds[:, 1]) ** 0.5,
-    }
+    out = {}
+    for i, t in enumerate(["sbp", "dbp"]):
+        err = preds[:, i] - tgts[:, i]
+        out[f"mae_{t}"]  = float(np.abs(err).mean())
+        out[f"mse_{t}"]  = float((err ** 2).mean())
+        out[f"rmse_{t}"] = float(np.sqrt((err ** 2).mean()))
+        out[f"me_{t}"]   = float(err.mean())     # bias  (AAMI: |ME| <= 5)
+        out[f"sd_{t}"]   = float(err.std())      # precision (AAMI: SD <= 8)
+    return out
 
 
 @torch.no_grad()
@@ -175,8 +414,8 @@ def predict(model, loader, device):
     """Return raw (preds, targets) arrays of shape (N, 2) for diagnostics."""
     model.eval()
     preds, tgts = [], []
-    for x, y in loader:
-        preds.append(model(x.to(device)).cpu().numpy())
+    for x, y, cal in loader:
+        preds.append(_forward(model, x.to(device), cal.to(device)).cpu().numpy())
         tgts.append(y.numpy())
     return np.concatenate(preds), np.concatenate(tgts)
 
@@ -297,9 +536,12 @@ def train_deep(model, train_loader, val_loader, test_loader, cfg, run_name, devi
 
     if TORCHINFO_AVAILABLE:
         # infer input shape from first batch of train_loader
-        sample_x, _ = next(iter(train_loader))
+        sample_x, _, sample_cal = next(iter(train_loader))
+        dev = next(model.parameters()).device
+        summary_input = ([sample_x[:1].to(dev), sample_cal[:1].to(dev)]
+                         if sample_cal.shape[1] > 0 else sample_x[:1].to(dev))
         arch_summary = torch_summary(
-            model, input_data=sample_x[:1].to(next(model.parameters()).device),
+            model, input_data=summary_input,
             col_names=["input_size", "output_size", "num_params", "trainable"],
             verbose=0)
         print(arch_summary)
@@ -323,32 +565,48 @@ def train_deep(model, train_loader, val_loader, test_loader, cfg, run_name, devi
                 for pg in opt.param_groups:
                     pg["lr"] = base_lr * (epoch + 1) / warmup
             lr = opt.param_groups[0]["lr"]
-        total_loss, total_gnorm, n_batches = 0.0, 0.0, 0
-        for x, y in train_loader:
-            x, y = x.to(device), y.to(device)
+        total_loss, total_mse, total_gnorm, n_batches = 0.0, 0.0, 0.0, 0
+        for x, y, cal in train_loader:
+            x, y, cal = x.to(device), y.to(device), cal.to(device)
             opt.zero_grad()
-            loss = loss_fn(model(x), y)
+            out  = _forward(model, x, cal)
+            loss = loss_fn(out, y)                       # L1 (MAE) objective
             loss.backward()
             gnorm = nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
-            total_loss += loss.item(); total_gnorm += gnorm.item(); n_batches += 1
+            total_loss += loss.item()
+            total_mse  += ((out.detach() - y) ** 2).mean().item()
+            total_gnorm += gnorm.item(); n_batches += 1
 
         epoch_time = time.time() - epoch_start
         val_m      = evaluate(model, val_loader,  device)
-        avg_loss   = total_loss  / n_batches
+        avg_loss   = total_loss  / n_batches            # train MAE
+        avg_mse    = total_mse   / n_batches            # train MSE
         avg_gnorm  = total_gnorm / n_batches
         val_mae    = (val_m["mae_sbp"] + val_m["mae_dbp"]) / 2
 
         if use_wb and run:
             wandb.log({
                 "epoch":             epoch,
-                # loss/* superimposed: train MAE vs val MAE on one chart
-                "loss/train":        avg_loss,
-                "loss/val_sbp":      val_m["mae_sbp"],
-                "loss/val_dbp":      val_m["mae_dbp"],
-                "loss/val_mean":     val_mae,
+                # loss/* superimposed: train vs val on one chart
+                "loss/train_mae":    avg_loss,
+                "loss/train_mse":    avg_mse,
+                "loss/val_mae_mean": val_mae,
+                # MAE (per target)
+                "val/mae_sbp":       val_m["mae_sbp"],
+                "val/mae_dbp":       val_m["mae_dbp"],
+                # MSE (per target)
+                "val/mse_sbp":       val_m["mse_sbp"],
+                "val/mse_dbp":       val_m["mse_dbp"],
+                # RMSE (per target)
                 "val/rmse_sbp":      val_m["rmse_sbp"],
                 "val/rmse_dbp":      val_m["rmse_dbp"],
+                # Mean error / bias  (AAMI: |ME| <= 5)
+                "val/me_sbp":        val_m["me_sbp"],
+                "val/me_dbp":        val_m["me_dbp"],
+                # SD of error / precision  (AAMI: SD <= 8)
+                "val/sd_sbp":        val_m["sd_sbp"],
+                "val/sd_dbp":        val_m["sd_dbp"],
                 "train/grad_norm":   avg_gnorm,
                 "train/lr":          lr,
                 "perf/epoch_time_s": epoch_time,
@@ -493,10 +751,14 @@ class _ModalFusionBlock(nn.Module):
 
 class BPDualStreamTransformer(nn.Module):
     """PPG+ECG: per-modality sinusoidal PE → 3 cross-attention fusion blocks → shared encoder.
-    Requires channels=['ppg','ecg']."""
-    def __init__(self, d_model=128, n_heads=8, n_layers=2, n_fusion_blocks=3, dropout=0.1):
+    Requires channels=['ppg','ecg'].  When cal_dim>0 the calibration anchor (BP_cal)
+    is concatenated to the pooled representation before the head, so the model only
+    has to learn within-subject deviations from the known baseline."""
+    def __init__(self, d_model=128, n_heads=8, n_layers=2, n_fusion_blocks=3,
+                 dropout=0.1, cal_dim=0):
         super().__init__()
         n_mod = 2
+        self.cal_dim = cal_dim
         self.proj   = nn.ModuleList([nn.Linear(1, d_model) for _ in range(n_mod)])
         self.pos    = nn.ModuleList([SinusoidalPE(d_model) for _ in range(n_mod)])
         self.fusion = nn.ModuleList([_ModalFusionBlock(n_mod, d_model, n_heads, dropout)
@@ -505,16 +767,20 @@ class BPDualStreamTransformer(nn.Module):
             nn.TransformerEncoderLayer(d_model, n_heads, d_model * 4, dropout,
                                        batch_first=True, norm_first=True),
             num_layers=n_layers)
+        self.pool = nn.Sequential(nn.AdaptiveAvgPool1d(1), nn.Flatten())
         self.head = nn.Sequential(
-            nn.AdaptiveAvgPool1d(1), nn.Flatten(),
-            nn.Linear(d_model, 64), nn.GELU(), nn.Dropout(dropout), nn.Linear(64, 2))
+            nn.Linear(d_model + cal_dim, 64), nn.GELU(), nn.Dropout(dropout),
+            nn.Linear(64, 2))
 
-    def forward(self, x):
+    def forward(self, x, cal=None):
         embs = [self.pos[c](self.proj[c](x[:, :, c:c+1])) for c in range(2)]
         for block in self.fusion:
             embs = block(embs)
         fused = torch.stack(embs, dim=0).mean(0)
-        return self.head(self.encoder(fused).transpose(1, 2))
+        feat  = self.pool(self.encoder(fused).transpose(1, 2))
+        if self.cal_dim and cal is not None:
+            feat = torch.cat([feat, cal], dim=-1)
+        return self.head(feat)
 
 
 class BPTriStreamTransformer(nn.Module):
@@ -689,9 +955,10 @@ class BPS4CrossChannel(nn.Module):
     explicit positional encoding is added before fusion.
     """
     def __init__(self, n_channels, d_model=256, d_state=128, n_layers=6,
-                 n_heads=8, n_fusion_blocks=3, dropout=0.1):
+                 n_heads=8, n_fusion_blocks=3, dropout=0.1, cal_dim=0):
         super().__init__()
         self.n_channels = n_channels
+        self.cal_dim    = cal_dim
         # Independent S4 stack per channel (each channel is its own site)
         self.projs     = nn.ModuleList([nn.Linear(1, d_model) for _ in range(n_channels)])
         self.s4_stacks = nn.ModuleList([
@@ -704,11 +971,12 @@ class BPS4CrossChannel(nn.Module):
             _ModalFusionBlock(n_channels, d_model, n_heads, dropout)
             for _ in range(n_fusion_blocks)])
 
+        self.pool = nn.Sequential(nn.AdaptiveAvgPool1d(1), nn.Flatten())
         self.head = nn.Sequential(
-            nn.AdaptiveAvgPool1d(1), nn.Flatten(),
-            nn.Linear(d_model, 64), nn.GELU(), nn.Dropout(dropout), nn.Linear(64, 2))
+            nn.Linear(d_model + cal_dim, 64), nn.GELU(), nn.Dropout(dropout),
+            nn.Linear(64, 2))
 
-    def forward(self, x):
+    def forward(self, x, cal=None):
         # Stage 1 — independent temporal encoding per channel, keep full sequence
         embs = []
         for c in range(self.n_channels):
@@ -722,7 +990,10 @@ class BPS4CrossChannel(nn.Module):
             embs = block(embs)
 
         fused = torch.stack(embs, dim=0).mean(0)            # (B, L, d_model)
-        return self.head(fused.transpose(1, 2))             # head pools over time
+        feat  = self.pool(fused.transpose(1, 2))            # pool over time
+        if self.cal_dim and cal is not None:
+            feat = torch.cat([feat, cal], dim=-1)
+        return self.head(feat)
 
 
 # ── LightGBM ──────────────────────────────────────────────────────────────────
@@ -871,8 +1142,10 @@ def get_features(X, channels, cfg, split_name):
     cache_dir = os.path.join(cfg["data_root"], "features")
     os.makedirs(cache_dir, exist_ok=True)
     ds_tag     = f"_ds{cfg.get('downsample', 1)}" if cfg.get("downsample", 1) > 1 else ""
+    norm_tag   = f"_{cfg.get('normalize', 'segment')}"
+    smoke_tag  = "_smoke" if cfg.get("smoke", False) else ""   # never clobber full caches
     cache_path = os.path.join(cache_dir,
-                              f"{split_name}_{ch_tag}_seq{cfg['seq_len']}{ds_tag}_v3.npy")
+                              f"{split_name}_{ch_tag}_seq{cfg['seq_len']}{ds_tag}{norm_tag}{smoke_tag}_v4.npy")
     if os.path.exists(cache_path):
         F = np.load(cache_path)
         print(f"  Loaded cached features: {os.path.basename(cache_path)}  {F.shape}")
@@ -898,10 +1171,37 @@ def _fmt_tree(node, fnames, lines, depth=0):
         _fmt_tree(node["right_child"], fnames, lines, depth + 1)
 
 
-def train_lgbm(F_tr, y_tr, F_va, y_va, F_te, y_te, cfg, run_name, channels=None):
+def build_lgbm_calibrated(F, y, groups, k_cal, base_names):
+    """Augment per-segment features with the subject's calibration anchor.
+
+    For each query segment we append, in order:
+      * the calibration-segment feature means  (<name>_cal),
+      * the query−calibration difference        (<name>_delta)  ← e.g. Δ-PTT,
+      * the reference calibration BP             (bp_cal_sbp/dbp).
+    The *_delta block is where pulse-transit-time changes show up, so LightGBM
+    feature importance / SHAP directly exposes the PTT mechanism."""
+    cal_idx_per_subj, q_idx = calibration_split(groups, k_cal)
+    F_cal_by_subj  = {g: F[idxs].mean(axis=0) for g, idxs in cal_idx_per_subj.items()}
+    bp_cal_by_subj = {g: y[idxs].mean(axis=0) for g, idxs in cal_idx_per_subj.items()}
+    gq    = groups[q_idx]
+    Fq    = F[q_idx]
+    Fcal  = np.stack([F_cal_by_subj[int(g)]  for g in gq])
+    bpcal = np.stack([bp_cal_by_subj[int(g)] for g in gq]).astype(np.float32)
+    aug   = np.concatenate([Fq, Fcal, Fq - Fcal, bpcal], axis=1).astype(np.float32)
+    names = (list(base_names)
+             + [f"{n}_cal"   for n in base_names]
+             + [f"{n}_delta" for n in base_names]
+             + ["bp_cal_sbp", "bp_cal_dbp"])
+    return aug, y[q_idx], gq, bpcal, names
+
+
+def train_lgbm(F_tr, y_tr, F_va, y_va, F_te, y_te, cfg, run_name,
+               channels=None, feature_names=None):
     use_wb     = WANDB_AVAILABLE and bool(os.environ.get("WANDB_API_KEY"))
     results    = {}
-    fnames     = _feature_names(channels) if channels else [f"f{i}" for i in range(F_tr.shape[1])]
+    fnames     = (feature_names if feature_names is not None else
+                  (_feature_names(channels) if channels
+                   else [f"f{i}" for i in range(F_tr.shape[1])]))
     smoke      = cfg.get("smoke", False)
 
     for target_idx, target_name in enumerate(["sbp", "dbp"]):
@@ -1071,7 +1371,8 @@ def main():
                         help="Comma-separated channels, e.g. ppg,ecg,resp")
     parser.add_argument("--gpu_profile", default="3080",
                         choices=list(_PROFILES.keys()),
-                        help="Controls window length + model size (fast / 3080 / h100)")
+                        help="Controls window length + model size "
+                             "(fast / 3080 / h100 / pulsedb)")
     parser.add_argument("--smoke",      action="store_true",
                         help="3 epochs / small data subset for sanity checks")
     parser.add_argument("--epochs",              type=int,   default=None)
@@ -1099,10 +1400,29 @@ def main():
     parser.add_argument("--seed",                type=int,   default=42)
     parser.add_argument("--downsample",   type=int,   default=1, metavar="F",
                         help="Downsample factor applied after loading (e.g. 5 for 125→25 Hz)")
+    parser.add_argument("--calibration",  type=int,   default=0, metavar="K",
+                        help="Calibration-based mode: reserve the first K segments of EACH "
+                             "subject as a per-subject BP_cal anchor and predict the rest "
+                             "conditioned on it (0=disabled / legacy absolute prediction)")
+    parser.add_argument("--normalize", default="segment",
+                        choices=["segment", "subject", "calib"],
+                        help="Signal scaling: segment (legacy per-segment std — discards "
+                             "pulse amplitude); subject (per-subject std — keeps within-subject "
+                             "amplitude); calib (per-subject std from the K calibration segments)")
     parser.add_argument("--run_name",     default=None,
                         help="Override run/checkpoint name (default: <model>_<channels>)")
     parser.add_argument("--wandb_project", default="bp-estimation")
     parser.add_argument("--data_root",    default=_ROOT)
+    parser.add_argument("--data_source",  default="mimic",
+                        choices=["mimic", "pulsedb"],
+                        help="Data source: 'mimic' (default, per-subject .npy files) or "
+                             "'pulsedb' (VitalDB .mat files in --dbdata_root)")
+    parser.add_argument("--dbdata_root",  default=os.path.join(_ROOT, "dbdata"),
+                        help="Directory containing PulseDB .mat files (--data_source pulsedb)")
+    parser.add_argument("--test_protocol", default="aami",
+                        choices=["aami", "aami_cal", "cal_free", "cal_based"],
+                        help="PulseDB test set: aami (666 segs), aami_cal (AAMI + cal anchor), "
+                             "cal_free (57 600 segs), cal_based (51 720 segs, use --calibration K)")
     args = parser.parse_args()
 
     channels = [c.strip() for c in args.channels.split(",")]
@@ -1143,15 +1463,21 @@ def main():
         "lgbm_n_estimators":    50  if args.smoke else 2000,
         "lgbm_lr":              0.1 if args.smoke else 0.03,
         "downsample":           args.downsample,
+        "calibration":          args.calibration,
+        "smoke":                args.smoke,
         "arch_version":         ARCH_VERSION,
         "wandb_project":     args.wandb_project,
         "wandb_entity":      None,
+        "data_source":       args.data_source,
     }
 
-    cfg["results_dir"] = os.path.join(args.data_root, "results")
+    results_base = args.dbdata_root if args.data_source == "pulsedb" else args.data_root
+    cfg["results_dir"] = os.path.join(results_base, "results")
 
     seed_everything(cfg["seed"])
     run_name = args.run_name or f"{args.model}_{'_'.join(channels)}"
+    if args.calibration > 0 and args.run_name is None:
+        run_name = f"{run_name}_cal{args.calibration}"   # keep legacy results separate
     mode_tag = " [SMOKE]" if args.smoke else ""
     print(f"\n{'='*65}")
     print(f"  Experiment: {run_name}{mode_tag}")
@@ -1160,18 +1486,32 @@ def main():
     print(f"  d_model={d_model}  n_layers={n_layers}  batch={batch_size}  epochs={epochs}")
     print(f"{'='*65}")
 
-    root      = args.data_root
-    train_sub = read_subject_list(os.path.join(root, "train_subjects.txt"))
-    val_sub   = read_subject_list(os.path.join(root, "val_subjects.txt"))
-    test_sub  = read_subject_list(os.path.join(root, "test_subjects.txt"))
-
-    if args.smoke:
-        train_sub = train_sub[:4]; val_sub = val_sub[:1]; test_sub = test_sub[:2]
-
     print("Loading data...")
-    train_sig, train_lbl = extract_segments(train_sub, root, seq_len, seg_start)
-    val_sig,   val_lbl   = extract_segments(val_sub,   root, seq_len, seg_start)
-    test_sig,  test_lbl  = extract_segments(test_sub,  root, seq_len, seg_start)
+    pulsedb_cal_data = None   # (X_cal, y_cal, grp_cal) for aami_cal protocol
+    if args.data_source == "pulsedb":
+        if args.gpu_profile != "pulsedb":
+            print(f"  Note: --data_source pulsedb works best with --gpu_profile pulsedb "
+                  f"(current: {args.gpu_profile}, seq_len={seq_len})")
+        (train_sig, train_lbl, train_grp), \
+        (val_sig,   val_lbl,   val_grp), \
+        (test_sig,  test_lbl,  test_grp), \
+        pulsedb_cal_data = load_pulsedb_splits(
+            args.dbdata_root, val_frac=0.2, seed=cfg["seed"],
+            test_protocol=args.test_protocol)
+        if args.smoke:
+            train_sig = train_sig[:400]; train_lbl = train_lbl[:400]; train_grp = train_grp[:400]
+            val_sig   = val_sig[:100];   val_lbl   = val_lbl[:100];   val_grp   = val_grp[:100]
+            test_sig  = test_sig[:200];  test_lbl  = test_lbl[:200];  test_grp  = test_grp[:200]
+    else:
+        root      = args.data_root
+        train_sub = read_subject_list(os.path.join(root, "train_subjects.txt"))
+        val_sub   = read_subject_list(os.path.join(root, "val_subjects.txt"))
+        test_sub  = read_subject_list(os.path.join(root, "test_subjects.txt"))
+        if args.smoke:
+            train_sub = train_sub[:4]; val_sub = val_sub[:1]; test_sub = test_sub[:2]
+        train_sig, train_lbl, train_grp = extract_segments(train_sub, root, seq_len, seg_start)
+        val_sig,   val_lbl,   val_grp   = extract_segments(val_sub,   root, seq_len, seg_start)
+        test_sig,  test_lbl,  test_grp  = extract_segments(test_sub,  root, seq_len, seg_start)
 
     X_train, y_train = train_sig, train_lbl
     X_val,   y_val   = val_sig,   val_lbl
@@ -1187,24 +1527,77 @@ def main():
         cfg["fs"]      = FS // f
         print(f"Downsampled {f}x -> {cfg['fs']} Hz  seq_len={cfg['seq_len']}")
 
+    norm_mode = args.normalize
+    if norm_mode == "calib" and args.calibration == 0:
+        print("  normalize=calib needs --calibration>0; falling back to 'subject'")
+        norm_mode = "subject"
+    cfg["normalize"] = norm_mode
+    print(f"Normalizing signals: mode={norm_mode}")
+    X_train = normalize_signals(X_train, train_grp, norm_mode, args.calibration)
+    X_val   = normalize_signals(X_val,   val_grp,   norm_mode, args.calibration)
+    X_test  = normalize_signals(X_test,  test_grp,  norm_mode, args.calibration)
+
     print(f"X_train {X_train.shape}  X_val {X_val.shape}  X_test {X_test.shape}")
+
+    k_cal = cfg["calibration"]
+    if k_cal > 0:
+        print(f"Calibration mode: first {k_cal} segments/subject reserved as BP_cal anchor")
+
+    def _report_baseline(bp_cal_te, y_te):
+        """The calibration-only baseline = predicting each subject's BP_cal for
+        every query segment.  Any model must beat this to be earning its keep."""
+        b_sbp = float(np.abs(bp_cal_te[:, 0] - y_te[:, 0]).mean())
+        b_dbp = float(np.abs(bp_cal_te[:, 1] - y_te[:, 1]).mean())
+        print(f"  Calibration-only baseline test MAE: SBP={b_sbp:.2f}  DBP={b_dbp:.2f} mmHg")
 
     if args.model == "lgbm":
         F_train = get_features(X_train, channels, cfg, "train")
         F_val   = get_features(X_val,   channels, cfg, "val")
         F_test  = get_features(X_test,  channels, cfg, "test")
+        fnames  = None
+        if k_cal > 0:
+            base_names = _feature_names(channels)
+            F_train, y_train, _, _,        fnames = build_lgbm_calibrated(
+                F_train, y_train, train_grp, k_cal, base_names)
+            F_val,   y_val,   _, _,        _      = build_lgbm_calibrated(
+                F_val,   y_val,   val_grp,   k_cal, base_names)
+            F_test,  y_test,  _, bpcal_te, _      = build_lgbm_calibrated(
+                F_test,  y_test,  test_grp,  k_cal, base_names)
+            _report_baseline(bpcal_te, y_test)
         metrics = train_lgbm(F_train, y_train, F_val, y_val, F_test, y_test,
-                             cfg, run_name, channels=channels)
+                             cfg, run_name, channels=channels, feature_names=fnames)
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Device: {device}")
+
+        CAL_MODELS = {"dual_stream", "s4_cross"}
+        cal_train = cal_val = cal_test = None
+        cal_dim = 0
+        if k_cal > 0:
+            if args.model not in CAL_MODELS:
+                parser.error("--calibration conditioning is implemented for "
+                             f"{sorted(CAL_MODELS)} (deep) and lgbm")
+            X_train, y_train, _, bpcal_tr = apply_calibration(X_train, y_train, train_grp, k_cal)
+            X_val,   y_val,   _, bpcal_va = apply_calibration(X_val,   y_val,   val_grp,   k_cal)
+            X_test,  y_test,  _, bpcal_te = apply_calibration(X_test,  y_test,  test_grp,  k_cal)
+            # normalize the BP_cal anchor with TRAIN stats before conditioning
+            cal_mean = bpcal_tr.mean(0); cal_std = bpcal_tr.std(0) + 1e-6
+            cal_train = (bpcal_tr - cal_mean) / cal_std
+            cal_val   = (bpcal_va - cal_mean) / cal_std
+            cal_test  = (bpcal_te - cal_mean) / cal_std
+            cal_dim   = bpcal_tr.shape[1]
+            _report_baseline(bpcal_te, y_test)
+            print(f"X_train {X_train.shape}  X_val {X_val.shape}  X_test {X_test.shape} (query only)")
+
         train_loader, val_loader, test_loader, n_ch = make_loaders(
-            X_train, y_train, X_val, y_val, X_test, y_test, channels, cfg)
+            X_train, y_train, X_val, y_val, X_test, y_test, channels, cfg,
+            cal_tr=cal_train, cal_va=cal_val, cal_te=cal_test)
 
         if args.model == "transformer":
             model = BPTransformer(n_ch, d_model, n_heads, n_layers, 0.1).to(device)
         elif args.model == "dual_stream":
-            model = BPDualStreamTransformer(d_model, n_heads, n_layers, dropout=0.1).to(device)
+            model = BPDualStreamTransformer(d_model, n_heads, n_layers,
+                                            dropout=0.1, cal_dim=cal_dim).to(device)
         elif args.model == "tri_stream":
             model = BPTriStreamTransformer(d_model, n_heads, n_layers, dropout=0.1).to(device)
         elif args.model == "noise_robust":
@@ -1214,10 +1607,24 @@ def main():
             model = BPS4(n_ch, d_model, cfg["d_state"], n_layers, 0.1).to(device)
         elif args.model == "s4_cross":
             model = BPS4CrossChannel(n_ch, d_model, cfg["d_state"], n_layers,
-+                                     n_heads, dropout=0.1).to(device)
+                                     n_heads, dropout=0.1, cal_dim=cal_dim).to(device)
 
         print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
         metrics = train_deep(model, train_loader, val_loader, test_loader, cfg, run_name, device)
+
+        # PulseDB AAMI cal-based evaluation: post-hoc per-subject offset correction
+        if args.data_source == "pulsedb" and args.test_protocol == "aami_cal" \
+                and pulsedb_cal_data is not None:
+            ch_idx = [CHANNEL_MAP[c] for c in channels]
+            X_cal, y_cal, grp_cal = pulsedb_cal_data
+            X_cal = normalize_signals(X_cal, grp_cal, cfg["normalize"])
+            cal_metrics, _, _ = pulsedb_calbased_eval(
+                model, X_cal, y_cal, grp_cal,
+                X_test, y_test, test_grp, ch_idx, device)
+            print(f"\nPulseDB AAMI cal-based results [{run_name}]:")
+            for k, v in cal_metrics.items():
+                print(f"  {k}: {v:.3f} mmHg")
+            metrics.update({f"pulsedb_cal/{k}": v for k, v in cal_metrics.items()})
 
     print(f"\nResults [{run_name}]:")
     for k, v in metrics.items():
