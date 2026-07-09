@@ -3,29 +3,29 @@
   "per_seed": [
     {
       "seed": 0,
-      "beer_to_mk_auroc": 0.28540625000000003,
-      "mk_to_beer_auroc": 0.6758020833333334,
-      "within_beer_auroc": 0.8265717577353523,
-      "within_mk_auroc": 0.9972432521395656
+      "beer_to_mk_auroc": 0.3024791666666667,
+      "mk_to_beer_auroc": 0.7696041666666668,
+      "within_beer_auroc": 0.880184331797235,
+      "within_mk_auroc": 0.9980250164581962
     },
     {
       "seed": 1,
-      "beer_to_mk_auroc": 0.29432291666666666,
-      "mk_to_beer_auroc": 0.6204791666666667,
-      "within_beer_auroc": 0.7576190476190476,
-      "within_mk_auroc": 0.9922510822510823
+      "beer_to_mk_auroc": 0.3116979166666667,
+      "mk_to_beer_auroc": 0.7171979166666668,
+      "within_beer_auroc": 0.8214285714285715,
+      "within_mk_auroc": 0.9954545454545454
     },
     {
       "seed": 2,
-      "beer_to_mk_auroc": 0.29468750000000005,
-      "mk_to_beer_auroc": 0.7258333333333333,
-      "within_beer_auroc": 0.7692071431705498,
-      "within_mk_auroc": 0.9992979684963363
+      "beer_to_mk_auroc": 0.31945833333333334,
+      "mk_to_beer_auroc": 0.7504895833333333,
+      "within_beer_auroc": 0.889824930893774,
+      "within_mk_auroc": 0.9982449212408407
     }
   ],
-  "mean_beer_to_mk_auroc": 0.2914722222222222,
-  "mean_mk_to_beer_auroc": 0.6740381944444445,
-  "mean_within_beer_auroc": 0.7844659828416499,
-  "mean_within_mk_auroc": 0.996264100962328,
+  "mean_beer_to_mk_auroc": 0.31121180555555555,
+  "mean_mk_to_beer_auroc": 0.7457638888888889,
+  "mean_within_beer_auroc": 0.8638126113731935,
+  "mean_within_mk_auroc": 0.9972414943845274,
   "chance": 0.5
 }

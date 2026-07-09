@@ -105,23 +105,24 @@ for whether the probe over-fires on merely-unusual-but-answerable inputs.
 Mean over 3 seeds, using the compact 3-feature signature (residual
 z-score, activation-norm z-score, probe-confidence percentile):
 
-| | AUROC |
+| | AUROC (mean of 3 seeds) |
 |---|---|
-| within-domain, Beer-Lambert | 0.78 |
-| within-domain, Moens-Korteweg | 0.996 |
-| Moens-Korteweg → Beer-Lambert (transfer) | 0.67 |
-| Beer-Lambert → Moens-Korteweg (transfer) | **0.29** (below chance) |
+| within-domain, Beer-Lambert | 0.86 |
+| within-domain, Moens-Korteweg | 0.997 |
+| Moens-Korteweg → Beer-Lambert (transfer) | 0.75 |
+| Beer-Lambert → Moens-Korteweg (transfer) | **0.31** (below chance) |
 
-This is exactly the predicted asymmetry, and sharper than expected. MK's
+This is exactly the predicted asymmetry, sharp and reproducible (per-seed
+beer→mk: 0.302 / 0.312 / 0.319; mk→beer: 0.770 / 0.717 / 0.750). MK's
 identifiability gap is large and clean (missing calibration makes BP
 *undecidable*, not just noisier — the Moens-Korteweg simulator's
 "missing_stiffness_cal"/"missing_path_length" conditions remove information
 the closed-form equation strictly requires) — its within-domain ceiling is
-near-perfect (0.996), and its fitted direction carries enough real signal to
-transfer moderately even into an unrelated domain (0.67). Beer-Lambert's
+near-perfect (0.997), and its fitted direction carries enough real signal to
+transfer moderately even into an unrelated domain (0.75). Beer-Lambert's
 gap is smaller (a missing channel still leaves a well-defined, bounded
 signal, just wrong) and its within-domain ceiling is correspondingly lower
-(0.78); the direction fit to it is noisier and — per the theory — carries
+(0.86); the direction fit to it is noisier and — per the theory — carries
 comparatively little transferable signal. That it transfers *below* chance
 rather than merely near it suggests the sign of at least one feature's
 relationship to `a(x)` is task-specific in a way this simple linear
