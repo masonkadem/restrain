@@ -845,6 +845,26 @@ LIMITATIONS = [
 ]
 
 
+# Mirrors the five-part "Success rule" documented in README.md: cross-attention
+# beats both controls, the law statistic is decodable, held-out answerability
+# detection beats chance, probe abstention beats random abstention, and the
+# probe direction is the one causally responsible (ablating it hurts more than
+# ablating a random direction of the same norm).
+_SUCCESS_CRITERIA = (
+    "cross_beats_controls",
+    "law_statistic_decodable",
+    "held_out_detection_above_chance",
+    "probe_beats_random_aurc",
+    "probe_intervention_beats_random",
+)
+
+
+def _law_success(decisions: list[dict]) -> bool:
+    return bool(decisions) and all(
+        d.get(key, False) for d in decisions for key in _SUCCESS_CRITERIA
+    )
+
+
 def export_summary(
     reports: list[dict], output_dir: Path, config: dict
 ) -> Path:
@@ -862,16 +882,8 @@ def export_summary(
         "aggregate": aggregate,
         "reports": reports,
         "overall_decision": {
-            "beer_success": all(
-                d.get("probe_beats_random_aurc", False)
-                and d.get("answerability_above_chance", False)
-                for d in aggregate["beer_lambert"]["decisions"]
-            ) if aggregate["beer_lambert"]["decisions"] else False,
-            "mk_success": all(
-                d.get("probe_beats_random_aurc", False)
-                and d.get("answerability_above_chance", False)
-                for d in aggregate["moens_korteweg"]["decisions"]
-            ) if aggregate["moens_korteweg"]["decisions"] else False,
+            "beer_success": _law_success(aggregate["beer_lambert"]["decisions"]),
+            "mk_success": _law_success(aggregate["moens_korteweg"]["decisions"]),
         },
     }
     path = output_dir / "summary.json"
