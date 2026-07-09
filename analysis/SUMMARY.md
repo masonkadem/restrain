@@ -102,6 +102,20 @@ against within-domain ceilings of 0.86 / 0.997. Exactly the γ-dependence the
 theory predicts: MK's large clean gap yields a transferable direction; Beer's
 small noisy gap does not.
 
+**Toy-model dissociation (the clean result).** The minimal instrument
+(`analysis/toy_identifiability.py`) dials the identifiability gap γ exactly
+and settles what the physiological runs could only hint at. At *matched* γ,
+two corruptions behave oppositely: a **zeroed** channel (input-visible) is
+detected at AUROC ≈ 0.9 and gating captures **85–90% of the oracle benefit at
+every γ**; a **resampled** channel (in-distribution, same error magnitude) is
+detected at **chance and gating gains nothing — even at γ = 171**. The
+determinant of whether gating works is not how wrong the answer is (γ) but
+**whether unanswerability is visible in the input**. This is the honest
+ceiling of single-pass activation probing, and it explains the physiological
+results directly (missing channels are input-visible → detected; non-missing
+corruptions that preserve the input distribution → undetectable). See
+`THEORY.md` §"Empirical check 3" for the corrected proposition.
+
 **Pre-registered verdict:** neither law clears the full five-criterion bar.
 The honest one-line reading: *the abstention machinery works, but current
 detection largely reflects missing information, not subtly-wrong-but-complete
@@ -124,13 +138,13 @@ Ranked by leverage:
 1. **Isolate held-out detection on non-missing corruptions** as its own
    headline metric. This directly measures the claim that matters and is the
    single most important next number.
-2. **The "toy model" move.** Replace the messy physiological laws with a
-   minimal `y = Ax` instrument where removing rows of `A` tunes γ exactly.
-   Sweep γ and look for a *phase transition* in decodability or clean
-   geometric structure in the answerability representation — in the spirit of
-   *Toy Models of Superposition*. This is the phenomenon study with real
-   main-track potential; the physiological laws become the "and it appears in
-   realistic settings too" section.
+2. **The "toy model" move — done, and it changed the story.** The minimal
+   instrument (`analysis/toy_identifiability.py`) already exists; its headline
+   finding (detectability tracks input-visibility, not γ) is now the sharpest
+   result in the repo. The remaining work is to push it further: geometry of
+   the answerability direction (is it rank-1?), the width/latent-dimension
+   interaction (superposition territory), and whether ensembles or test-time
+   perturbations break the single-pass ceiling on resampled corruption.
 3. **More laws** (Fick's principle, Windkessel) as out-of-sample tests that
    the protocol generalizes without per-law tuning.
 4. **Real data** (BIDMC PPG/SpO₂, MIMIC waveform-matched PPG+ABP) at least once.
@@ -145,6 +159,7 @@ pip install -r requirements.txt
 python -m unittest discover -s tests -p 'test_*.py'      # 21 tests
 python analysis/physics_law_credibility.py               # main benchmark
 python analysis/cross_law_transfer.py                    # transfer experiment
+python analysis/toy_identifiability.py                   # minimal γ-sweep instrument
 python analysis/plot_data_preview.py                     # data-preview figure
 # open analysis/dashboard.html for the interactive results
 ```

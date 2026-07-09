@@ -137,3 +137,41 @@ consistent with that weaker, more precise claim, and inconsistent with the
 stronger "universal semantic direction" claim the "cross-law audit
 protocol" name could be read as implying — which is itself a useful,
 falsifiable distinction to have sharpened.
+
+## Empirical check 3: the toy model, and a correction to the naive γ story
+
+The minimal instrument in `analysis/toy_identifiability.py` dials the gap γ
+exactly and reveals a subtlety the physiological simulators could only hint
+at. The naive reading of the proposition above — "detection AUROC → 1 as
+γ → ∞" — is **wrong as stated**, and the toy model shows why.
+
+The proposition is about `ℓ(x) = E[loss | x]` separating `A` from `A^c`. But
+a probe fit to the *answerability label* `a(x)` can only succeed when `a(x)`
+is (statistically) a function of the observable input `x`. Two corruptions at
+*identical* γ pull these apart:
+
+- **Zeroed** (a channel set to 0): unanswerability is written into `x` — the
+  peripheral coordinates are exactly zero. `a(x)` is a function of `x`, so a
+  probe detects it (AUROC ≈ 0.9) and gating captures ~85–90% of the oracle
+  benefit — **at every γ, essentially flat in γ**.
+- **Resampled** (a channel replaced by an in-distribution draw): the marginal
+  input distribution is *unchanged*, so `a(x)` is independent of `x` even
+  though the error is huge. No single deterministic forward pass can
+  distinguish it: detection AUROC stays at chance (0.49–0.51) and gating
+  benefit stays at zero — **even at γ = 171** (`results/toy_identifiability/sweep.json`).
+
+So the corrected statement: **γ governs the *loss* separation, but
+single-pass detectability is governed by whether unanswerability is a
+function of the observable input, not by γ.** The identifiability gap tells
+you how much there is to gain from abstaining; input-visibility tells you
+whether a frozen probe can realize any of it.
+
+This exactly explains the physiological results. Missing channels /
+calibration are zeroed-type (input-visible) → detected. Held-out *non-missing*
+Beer–Lambert corruptions that barely move the input distribution are
+resampled-type → detection collapses to chance. It also sets a hard ceiling
+on the whole approach: **a purely value-level corruption that preserves the
+input distribution is undetectable by single-pass activation probing, no
+matter how wrong the answer becomes.** Escaping that ceiling requires signals
+a single forward pass does not have — ensembles, test-time perturbations, or
+access to the corrupted variable itself.

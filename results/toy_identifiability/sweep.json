@@ -1,0 +1,185 @@
+{
+  "claim": "In a linear instrument with exactly-tunable identifiability gap, probe-based gating benefit scales with gamma for input-visible corruption but stays at zero for in-distribution corruption of identical error magnitude -- detectability tracks input-visibility, not error size.",
+  "config": {
+    "output_dir": "results/toy_identifiability",
+    "seeds": [
+      0,
+      1,
+      2
+    ],
+    "k_core": 8,
+    "k_periph": 8,
+    "sigma": 0.1,
+    "n_train": 3000,
+    "n_probe": 600,
+    "n_test": 800,
+    "hidden": 64,
+    "epochs": 250,
+    "n_f": 9,
+    "f_min": 0.02,
+    "f_max": 0.85,
+    "demo_f": 0.6,
+    "quick": false
+  },
+  "sweep": {
+    "f": [
+      0.02,
+      0.12375,
+      0.22749999999999998,
+      0.33125,
+      0.435,
+      0.53875,
+      0.6425,
+      0.74625,
+      0.85
+    ],
+    "zeroed": [
+      {
+        "f": 0.02,
+        "gamma": 2.9999999999999996,
+        "detection_auroc_mean": 0.8847999999999999,
+        "detection_auroc_std": 0.022498199616916098,
+        "selective_gain_mean": 0.8407787237442497,
+        "selective_gain_std": 0.232816220120276
+      },
+      {
+        "f": 0.12375,
+        "gamma": 13.374999999999998,
+        "detection_auroc_mean": 0.8890244791666667,
+        "detection_auroc_std": 0.02587844448356367,
+        "selective_gain_mean": 0.8424737972380062,
+        "selective_gain_std": 0.07298372323338606
+      },
+      {
+        "f": 0.22749999999999998,
+        "gamma": 23.74999999999999,
+        "detection_auroc_mean": 0.8912609374999999,
+        "detection_auroc_std": 0.02792031301007803,
+        "selective_gain_mean": 0.8366388323729886,
+        "selective_gain_std": 0.08658514839686465
+      },
+      {
+        "f": 0.33125,
+        "gamma": 34.12499999999999,
+        "detection_auroc_mean": 0.8936062499999999,
+        "detection_auroc_std": 0.023652293399856895,
+        "selective_gain_mean": 0.8475135488834026,
+        "selective_gain_std": 0.06710618078269734
+      },
+      {
+        "f": 0.435,
+        "gamma": 44.49999999999999,
+        "detection_auroc_mean": 0.9085807291666667,
+        "detection_auroc_std": 0.01011133065941332,
+        "selective_gain_mean": 0.8617711161047135,
+        "selective_gain_std": 0.04738029195631452
+      },
+      {
+        "f": 0.53875,
+        "gamma": 54.87499999999998,
+        "detection_auroc_mean": 0.9132317708333334,
+        "detection_auroc_std": 0.004809213118169319,
+        "selective_gain_mean": 0.8705513581407797,
+        "selective_gain_std": 0.043567059222151934
+      },
+      {
+        "f": 0.6425,
+        "gamma": 65.24999999999999,
+        "detection_auroc_mean": 0.9158822916666667,
+        "detection_auroc_std": 0.0029964976119410004,
+        "selective_gain_mean": 0.8855432035867322,
+        "selective_gain_std": 0.03468110378648389
+      },
+      {
+        "f": 0.74625,
+        "gamma": 75.62499999999999,
+        "detection_auroc_mean": 0.9269453125,
+        "detection_auroc_std": 0.004030000008077415,
+        "selective_gain_mean": 0.90312199330483,
+        "selective_gain_std": 0.0295030659047052
+      },
+      {
+        "f": 0.85,
+        "gamma": 85.99999999999999,
+        "detection_auroc_mean": 0.9374682291666666,
+        "detection_auroc_std": 0.005509650968776795,
+        "selective_gain_mean": 0.9169277722253121,
+        "selective_gain_std": 0.03724258897733837
+      }
+    ],
+    "resampled": [
+      {
+        "f": 0.02,
+        "gamma": 4.999999999999999,
+        "detection_auroc_mean": 0.5069526041666667,
+        "detection_auroc_std": 0.022196300359459704,
+        "selective_gain_mean": -0.12707707238061727,
+        "selective_gain_std": 0.10818364494799755
+      },
+      {
+        "f": 0.12375,
+        "gamma": 25.749999999999996,
+        "detection_auroc_mean": 0.5066562499999999,
+        "detection_auroc_std": 0.014471041653919683,
+        "selective_gain_mean": -0.05732444183215938,
+        "selective_gain_std": 0.03130340617508249
+      },
+      {
+        "f": 0.22749999999999998,
+        "gamma": 46.49999999999998,
+        "detection_auroc_mean": 0.5030552083333334,
+        "detection_auroc_std": 0.013790260266282345,
+        "selective_gain_mean": -0.05270574118734236,
+        "selective_gain_std": 0.07565014697631582
+      },
+      {
+        "f": 0.33125,
+        "gamma": 67.24999999999999,
+        "detection_auroc_mean": 0.5052593750000001,
+        "detection_auroc_std": 0.0077414902036310965,
+        "selective_gain_mean": -0.05967291855568141,
+        "selective_gain_std": 0.06283833859268222
+      },
+      {
+        "f": 0.435,
+        "gamma": 87.99999999999999,
+        "detection_auroc_mean": 0.4981197916666667,
+        "detection_auroc_std": 0.004120687521118437,
+        "selective_gain_mean": -0.042619282853960834,
+        "selective_gain_std": 0.08396884878830485
+      },
+      {
+        "f": 0.53875,
+        "gamma": 108.74999999999996,
+        "detection_auroc_mean": 0.49505,
+        "detection_auroc_std": 0.002751297929974005,
+        "selective_gain_mean": -0.0293254891334494,
+        "selective_gain_std": 0.04514299883406576
+      },
+      {
+        "f": 0.6425,
+        "gamma": 129.49999999999997,
+        "detection_auroc_mean": 0.4907885416666667,
+        "detection_auroc_std": 0.008485469095099502,
+        "selective_gain_mean": -0.007800540808719406,
+        "selective_gain_std": 0.0937994498152997
+      },
+      {
+        "f": 0.74625,
+        "gamma": 150.24999999999997,
+        "detection_auroc_mean": 0.49945989583333333,
+        "detection_auroc_std": 0.0164355689085356,
+        "selective_gain_mean": -0.027870597924317047,
+        "selective_gain_std": 0.10654703418807902
+      },
+      {
+        "f": 0.85,
+        "gamma": 170.99999999999997,
+        "detection_auroc_mean": 0.5017026041666667,
+        "detection_auroc_std": 0.009116306354997055,
+        "selective_gain_mean": -0.07496276275170802,
+        "selective_gain_std": 0.168882497214617
+      }
+    ]
+  }
+}

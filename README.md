@@ -101,6 +101,22 @@ domain-general. Result: a sharp, reproducible asymmetry (Moens–Korteweg →
 Beer–Lambert transfers, Beer–Lambert → Moens–Korteweg does not) — evidence
 for a domain-general *mechanism*, not a domain-general *direction*.
 
+### Identifiability toy model (γ sweep)
+
+```bash
+python analysis/toy_identifiability.py
+python analysis/toy_identifiability.py --quick
+```
+
+A minimal linear inverse problem where the identifiability gap γ is dialed
+exactly. Its headline finding: at *matched* γ, an input-visible ("zeroed")
+corruption is detected and gating captures ~85–90% of the oracle benefit,
+while an in-distribution ("resampled") corruption of identical error
+magnitude is undetectable and gating gains nothing — even at γ = 171.
+**Detectability tracks input-visibility, not error size.** Output:
+`results/toy_identifiability/toy_gating.png` (four panels, including the
+canonical risk–coverage "the model restrains itself" curve).
+
 Unit tests:
 
 ```bash
