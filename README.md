@@ -89,10 +89,29 @@ the physics simulators alone.
 
 Report negative/mixed results directly.
 
+### Cross-law transfer
+
+```bash
+python analysis/cross_law_transfer.py
+```
+
+Trains a compact answerability signature on one law and evaluates it
+zero-shot on the other, testing whether the "I cannot answer" signal is
+domain-general. Result: a sharp, reproducible asymmetry (Moens–Korteweg →
+Beer–Lambert transfers, Beer–Lambert → Moens–Korteweg does not) — evidence
+for a domain-general *mechanism*, not a domain-general *direction*.
+
 Unit tests:
 
 ```bash
 python -m unittest discover -s tests -p 'test_*.py'
 ```
 
-See also `analysis/PHYSICS_ABSTENTION.md` for extended notes.
+### Further reading
+
+- `analysis/SUMMARY.md` — structured, honest write-up of method, theory,
+  and frozen results (including the missingness-shortcut limitation).
+- `analysis/THEORY.md` — the identifiability-gap (γ) mechanism and its
+  empirical checks.
+- `analysis/dashboard.html` — interactive multi-panel results dashboard.
+- `analysis/PHYSICS_ABSTENTION.md` — extended notes.
