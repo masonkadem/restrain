@@ -42,6 +42,18 @@ import numpy as np
 import torch
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+
+
+def _logistic():
+    # Standardize before fitting: the three signature features are on very
+    # different scales (z-scores vs a [0,1] percentile), which otherwise
+    # leaves LogisticRegression's lbfgs unconverged. For cross-law transfer
+    # the pipeline correctly applies the *source* law's scaler to the
+    # *target* law's features -- standardizing the target with the source's
+    # statistics is exactly what zero-shot transfer means.
+    return make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000))
 
 from physics_law_credibility import (  # noqa: E402
     BEER_SCENARIOS_PROBE,
@@ -134,7 +146,7 @@ def within_domain_reference(features: np.ndarray, answerable: np.ndarray, seed: 
     half = n // 2
     if np.unique(answerable[idx[:half]]).size < 2 or np.unique(answerable[idx[half:]]).size < 2:
         return float("nan")
-    clf = LogisticRegression(max_iter=2000).fit(features[idx[:half]], answerable[idx[:half]])
+    clf = _logistic().fit(features[idx[:half]], answerable[idx[:half]])
     return float(roc_auc_score(answerable[idx[half:]], clf.predict_proba(features[idx[half:]])[:, 1]))
 
 
@@ -156,10 +168,10 @@ def run(seeds: tuple[int, ...] = (0, 1, 2), beer_epochs: int = 120, mk_epochs: i
             mk_cfg, device,
         )
 
-        clf_beer = LogisticRegression(max_iter=2000).fit(beer_sig["features"], beer_sig["answerable"])
+        clf_beer = _logistic().fit(beer_sig["features"], beer_sig["answerable"])
         beer_to_mk = float(roc_auc_score(mk_sig["answerable"], clf_beer.predict_proba(mk_sig["features"])[:, 1]))
 
-        clf_mk = LogisticRegression(max_iter=2000).fit(mk_sig["features"], mk_sig["answerable"])
+        clf_mk = _logistic().fit(mk_sig["features"], mk_sig["answerable"])
         mk_to_beer = float(roc_auc_score(beer_sig["answerable"], clf_mk.predict_proba(beer_sig["features"])[:, 1]))
 
         within_beer = within_domain_reference(beer_sig["features"], beer_sig["answerable"], seed)
