@@ -793,12 +793,21 @@ def run_law_audit(
         val_scores = ans_probe.predict_proba(val_eval["activation"])
         test_probs = ans_probe.predict_proba(test_eval["activation"])
 
+        # README's documented criterion is "probe R^2 > 0 on held-out
+        # *clean*" -- fitting or evaluating against the full mixed test set
+        # (which includes scenarios that are unanswerable/corrupted by
+        # construction) tests something the benchmark never claims: of
+        # course a linear decoder of a well-defined statistic fails on
+        # inputs where that statistic is genuinely undefined. Restrict both
+        # fitting and evaluation to answerable/clean examples.
+        probe_answerable = probe_eval["answerable"].astype(bool)
+        test_clean = np.array([s == "clean" for s in test_eval["scenario"]])
         probe_r2 = {}
         for pname, getter in probe_targets.items():
             if pname not in probe_data:
                 continue
             tgt = getter(probe_data)
-            finite = np.isfinite(tgt)
+            finite = np.isfinite(tgt) & probe_answerable
             if finite.sum() < 4:
                 continue
             rp = fit_bootstrap_ridge(
@@ -808,7 +817,7 @@ def run_law_audit(
             rp.calibrate_confidence(probe_eval["activation"][finite])
             pred = rp.predict(test_eval["activation"])
             tgt_test = getter(test)
-            ft = np.isfinite(tgt_test)
+            ft = np.isfinite(tgt_test) & test_clean
             if ft.sum() > 1:
                 probe_r2[pname] = float(r2_score(tgt_test[ft], pred[ft]))
 
