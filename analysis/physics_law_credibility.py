@@ -640,6 +640,13 @@ def train_regressor(
             loss = ((pred - by) ** 2).mean()
             opt.zero_grad()
             loss.backward()
+            # Guards against occasional gradient blow-ups (observed: without
+            # this, held-out extrapolation on shifted-but-answerable
+            # scenarios like anatomy_shift could produce predictions in the
+            # billions on a fraction of test examples, dominating every
+            # downstream AURC computation with numerically meaningless
+            # values rather than genuine selective-risk signal).
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             opt.step()
             total += loss.item() * len(idx)
         sched.step()
@@ -665,6 +672,17 @@ def evaluate_regressor(
             bb = b[start : start + batch_size].to(device)
             bc = cal[start : start + batch_size].to(device) if cal is not None else None
             pred, ctx, _ = model(ba, bb, calibration=bc, return_features=True)
+            # Extrapolating far outside the (clean-only) training manifold
+            # -- e.g. held-out scenarios like anatomy_shift that scale a
+            # calibration feature well beyond its training range -- can
+            # drive an unbounded ReLU network's raw output to diverge
+            # wildly (observed: standardized outputs in the hundreds of
+            # millions on a subset of test examples, which would dominate
+            # every downstream AURC computation with numerically
+            # meaningless values). +-15 std is a wide margin -- true targets
+            # are within a few std of the training mean by construction --
+            # so this only catches genuine blow-ups, not real predictions.
+            pred = torch.clamp(pred, -15.0, 15.0)
             pred = normalizer.inverse_target(pred)
             preds.append(pred.cpu().numpy())
             acts.append(ctx.cpu().numpy())
