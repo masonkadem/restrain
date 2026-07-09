@@ -27,6 +27,7 @@ from physics_law_credibility import (  # noqa: E402
     generate_beer_lambert_sample,
     generate_moens_korteweg_sample,
     intervene_activation,
+    paired_significance,
     probe_direction,
     random_direction,
     run_beer_audit,
@@ -154,6 +155,22 @@ class PhysicsLawCredibilityTests(unittest.TestCase):
         report = run_beer_audit(cfg, torch.device("cpu"))
         self.assertEqual(report["law"], "beer_lambert")
         self.assertIn("cross_attention", report["models"])
+
+    def test_paired_significance_detects_consistent_gap(self) -> None:
+        rng = np.random.default_rng(0)
+        a = 1.0 + rng.normal(0, 0.05, 10)
+        b = 1.5 + rng.normal(0, 0.05, 10)
+        result = paired_significance(a, b, seed=0)
+        self.assertTrue(result["significant"])
+        self.assertLess(result["ci_high"], 0)
+        self.assertLess(result["wilcoxon_p"], 0.05)
+
+    def test_paired_significance_rejects_noise(self) -> None:
+        rng = np.random.default_rng(1)
+        a = 1.0 + rng.normal(0, 1.0, 6)
+        b = 1.0 + rng.normal(0, 1.0, 6)
+        result = paired_significance(a, b, seed=0)
+        self.assertFalse(result["significant"])
 
     def test_export_summary_schema(self) -> None:
         import torch
