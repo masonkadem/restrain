@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Model Credibility Audit</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --card: #ffffff;
+      --text: #1a1d21;
+      --muted: #5c6570;
+      --border: #e2e6ea;
+      --accent: #2563eb;
+      --pass: #15803d;
+      --fail: #b91c1c;
+      --warn: #a16207;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      padding: 2rem 2rem 1rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--card);
+    }
+    header h1 { margin: 0 0 0.25rem; font-size: 1.75rem; font-weight: 600; }
+    header p { margin: 0; color: var(--muted); max-width: 52rem; }
+    main { padding: 1.5rem 2rem 3rem; max-width: 1100px; margin: 0 auto; }
+    .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem;
+    }
+    .card h2 { margin: 0 0 0.75rem; font-size: 1.1rem; }
+    .badge {
+      display: inline-block;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+    .badge.pass { background: #dcfce7; color: var(--pass); }
+    .badge.fail { background: #fee2e2; color: var(--fail); }
+    .badge.warn { background: #fef9c3; color: var(--warn); }
+    .metric { font-size: 1.75rem; font-weight: 600; margin: 0.25rem 0; }
+    .metric-label { font-size: 0.85rem; color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 500; }
+    .controls { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-bottom: 1.5rem; }
+    button, select, input[type=file] {
+      font: inherit;
+      padding: 0.45rem 0.85rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--card);
+      cursor: pointer;
+    }
+    button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .walkthrough ol { padding-left: 1.25rem; }
+    .walkthrough li { margin-bottom: 0.75rem; }
+    svg.chart { width: 100%; height: 220px; background: #fafbfc; border: 1px solid var(--border); border-radius: 6px; }
+    .limitations { font-size: 0.85rem; color: var(--muted); }
+    .hidden { display: none; }
+    #status { color: var(--muted); font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Model Credibility Audit</h1>
+    <p>
+      External activation audit for physiological law completeness. This platform
+      tests whether frozen linear probes detect when Beer–Lambert or Moens–Korteweg
+      inputs are incomplete, and whether abstaining reduces selective error.
+      Not for clinical use.
+    </p>
+  </header>
+  <main>
+    <div class="controls">
+      <button class="primary" id="loadDefault">Load default report</button>
+      <label><input type="file" id="fileInput" accept="application/json" /> Upload summary.json</label>
+      <select id="lawSelect" disabled>
+        <option value="beer_lambert">Beer–Lambert</option>
+        <option value="moens_korteweg">Moens–Korteweg</option>
+      </select>
+      <select id="scenarioSelect" disabled></select>
+      <span id="status">Serve from supervised_baselines/: python -m http.server 8000</span>
+    </div>
+
+    <div id="overview" class="grid hidden"></div>
+
+    <section id="walkthrough" class="card hidden" style="margin-top:1rem;">
+      <h2>Case walkthrough</h2>
+      <div class="walkthrough">
+        <ol id="walkSteps"></ol>
+      </div>
+    </section>
+
+    <section id="charts" class="grid hidden" style="margin-top:1rem;">
+      <div class="card">
+        <h2>Selective risk vs coverage</h2>
+        <p class="metric-label">Lower retained MAE is better. Probe-ranked abstention should beat random.</p>
+        <svg id="riskChart" class="chart" viewBox="0 0 400 220"></svg>
+      </div>
+      <div class="card">
+        <h2>Scenario MAE</h2>
+        <p class="metric-label">Cross-attention error by corruption scenario (seed 0).</p>
+        <svg id="scenarioChart" class="chart" viewBox="0 0 400 220"></svg>
+      </div>
+    </section>
+
+    <section id="limitations" class="card hidden limitations" style="margin-top:1rem;">
+      <h2>Limitations</h2>
+      <ul id="limitList"></ul>
+    </section>
+  </main>
+
+  <script>
+    let report = null;
+
+    async function loadDefault() {
+      setStatus("Loading results/physics_credibility/summary.json …");
+      try {
+        const resp = await fetch("../../results/physics_credibility/summary.json");
+        if (!resp.ok) throw new Error(resp.statusText);
+        report = await resp.json();
+        render();
+        setStatus("Loaded default report.");
+      } catch (e) {
+        setStatus("Could not load default report. Upload summary.json or run the experiment first.");
+      }
+    }
+
+    document.getElementById("loadDefault").addEventListener("click", loadDefault);
+    document.getElementById("fileInput").addEventListener("change", async (ev) => {
+      const file = ev.target.files[0];
+      if (!file) return;
+      report = JSON.parse(await file.text());
+      render();
+      setStatus("Loaded " + file.name);
+    });
+    document.getElementById("lawSelect").addEventListener("change", renderLaw);
+    document.getElementById("scenarioSelect").addEventListener("change", renderWalkthrough);
+
+    function setStatus(msg) { document.getElementById("status").textContent = msg; }
+
+    function render() {
+      if (!report) return;
+      document.getElementById("overview").classList.remove("hidden");
+      document.getElementById("walkthrough").classList.remove("hidden");
+      document.getElementById("charts").classList.remove("hidden");
+      document.getElementById("limitations").classList.remove("hidden");
+      document.getElementById("lawSelect").disabled = false;
+
+      const ov = document.getElementById("overview");
+      const agg = report.aggregate || {};
+      const od = report.overall_decision || {};
+      ov.innerHTML = `
+        <div class="card">
+          <h2>Overall</h2>
+          <span class="badge ${od.beer_success ? "pass" : "fail"}">Beer–Lambert ${od.beer_success ? "pass" : "mixed"}</span>
+          <span class="badge ${od.mk_success ? "pass" : "fail"}">Moens–Korteweg ${od.mk_success ? "pass" : "mixed"}</span>
+          <p style="margin-top:0.75rem;font-size:0.9rem;">${report.claim || ""}</p>
+        </div>
+        <div class="card">
+          <h2>Beer–Lambert aggregate</h2>
+          <div class="metric">${fmt(agg.beer_lambert?.mean_answerability_auroc)}</div>
+          <div class="metric-label">Mean answerability AUROC</div>
+          <div class="metric">${fmt(agg.beer_lambert?.mean_probe_aurc)}</div>
+          <div class="metric-label">Probe AURC (lower better)</div>
+        </div>
+        <div class="card">
+          <h2>Moens–Korteweg aggregate</h2>
+          <div class="metric">${fmt(agg.moens_korteweg?.mean_answerability_auroc)}</div>
+          <div class="metric-label">Mean answerability AUROC</div>
+          <div class="metric">${fmt(agg.moens_korteweg?.mean_probe_aurc)}</div>
+          <div class="metric-label">Probe AURC (lower better)</div>
+        </div>`;
+
+      const lim = report.limitations || [];
+      document.getElementById("limitList").innerHTML = lim.map(l => `<li>${l}</li>`).join("");
+
+      populateScenarios();
+      renderLaw();
+    }
+
+    function lawReports(law) {
+      return (report.reports || []).filter(r => r.law === law);
+    }
+
+    function populateScenarios() {
+      const law = document.getElementById("lawSelect").value;
+      const rep = lawReports(law)[0];
+      const sel = document.getElementById("scenarioSelect");
+      sel.innerHTML = "";
+      if (!rep) return;
+      const scenarios = Object.keys(rep.models?.cross_attention?.scenario_mae || {});
+      scenarios.forEach(sc => {
+        const opt = document.createElement("option");
+        opt.value = sc;
+        opt.textContent = sc;
+        sel.appendChild(opt);
+      });
+      sel.disabled = scenarios.length === 0;
+    }
+
+    function renderLaw() {
+      populateScenarios();
+      const law = document.getElementById("lawSelect").value;
+      const rep = lawReports(law)[0];
+      if (!rep) return;
+      renderWalkthrough();
+      renderCharts(rep);
+    }
+
+    function renderWalkthrough() {
+      const law = document.getElementById("lawSelect").value;
+      const scenario = document.getElementById("scenarioSelect").value;
+      const eq = (report.equations || {})[law] || "";
+      const rep = lawReports(law)[0];
+      const mae = rep?.models?.cross_attention?.scenario_mae?.[scenario];
+      const ans = scenario.startsWith("missing") || scenario.includes("missing");
+      const steps = [
+        `Inputs arrive for <strong>${law}</strong> (${scenario}). Governing relation: ${eq}`,
+        `Two-stream cross-attention encodes red/IR or proximal/distal waveforms into a context activation.`,
+        `Frozen Ridge probes decode law statistics (R, SpO₂ or PTT, PWV, BP). Logistic probe predicts identifiability.`,
+        `Scenario <strong>${scenario}</strong>: answerable=${!ans}. Cross-attention MAE≈${fmt(mae)}.`,
+        `Confidence from probe disagreement + activation support distance. Low confidence → abstain.`,
+        `Selective prediction retains highest-confidence windows; compare probe vs random risk–coverage.`,
+      ];
+      document.getElementById("walkSteps").innerHTML = steps.map(s => `<li>${s}</li>`).join("");
+    }
+
+    function renderCharts(rep) {
+      const sel = rep.models?.cross_attention?.selective || {};
+      drawRiskChart(sel);
+      drawScenarioChart(rep.models?.cross_attention?.scenario_mae || {});
+    }
+
+    function drawRiskChart(sel) {
+      const svg = document.getElementById("riskChart");
+      const probe = sel.probe?.risk || {};
+      const random = sel.random?.risk || {};
+      const coverages = [0.5, 0.8, 1.0];
+      const px = coverages.map((c,i) => 40 + i * 160);
+      const probeY = coverages.map(c => probe[c*100+"%"] || 0);
+      const randY = coverages.map(c => random[c*100+"%"] || 0);
+      const maxY = Math.max(...probeY, ...randY, 0.01);
+      const scaleY = v => 190 - (v / maxY) * 150;
+      svg.innerHTML = `
+        <text x="200" y="16" text-anchor="middle" font-size="11" fill="#5c6570">Retained MAE at 50/80/100% coverage</text>
+        ${px.map((x,i)=>`<circle cx="${x}" cy="${scaleY(probeY[i])}" r="5" fill="#2563eb"/>`).join("")}
+        ${px.map((x,i)=>`<circle cx="${x}" cy="${scaleY(randY[i])}" r="5" fill="#94a3b8"/>`).join("")}
+        ${px.slice(0,-1).map((x,i)=>`<line x1="${x}" y1="${scaleY(probeY[i])}" x2="${px[i+1]}" y2="${scaleY(probeY[i+1])}" stroke="#2563eb" stroke-width="2"/>`).join("")}
+        ${px.slice(0,-1).map((x,i)=>`<line x1="${x}" y1="${scaleY(randY[i])}" x2="${px[i+1]}" y2="${scaleY(randY[i+1])}" stroke="#94a3b8" stroke-width="2" stroke-dasharray="4"/>`).join("")}
+        <text x="320" y="30" font-size="10" fill="#2563eb">Probe</text>
+        <text x="320" y="44" font-size="10" fill="#94a3b8">Random</text>`;
+    }
+
+    function drawScenarioChart(mae) {
+      const svg = document.getElementById("scenarioChart");
+      const keys = Object.keys(mae);
+      const vals = keys.map(k => mae[k]);
+      const maxV = Math.max(...vals, 0.01);
+      const barW = Math.min(40, 360 / Math.max(keys.length, 1));
+      svg.innerHTML = keys.map((k,i) => {
+        const h = (vals[i]/maxV)*150;
+        const x = 30 + i*(barW+8);
+        return `<rect x="${x}" y="${190-h}" width="${barW}" height="${h}" fill="#2563eb" opacity="0.85"/>
+                <text x="${x+barW/2}" y="205" text-anchor="middle" font-size="8" fill="#5c6570" transform="rotate(-25 ${x+barW/2} 205)">${k.slice(0,10)}</text>`;
+      }).join("");
+    }
+
+    function fmt(x) {
+      if (x === undefined || x === null || Number.isNaN(x)) return "—";
+      return typeof x === "number" ? x.toFixed(3) : String(x);
+    }
+  </script>
+</body>
+</html>
