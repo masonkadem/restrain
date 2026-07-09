@@ -802,6 +802,25 @@ def run_law_audit(
         random_conf = np.random.default_rng(seed).random(len(losses))
         val_ref = val_scores[val_clean] if val_clean.any() else val_scores
         emp_conf = empirical_clean_confidence(val_ref, test_probs)
+        oracle_conf = test_eval["answerable"].astype(float)
+
+        # Non-probing UQ baseline: a bootstrap-ensemble regressor fit only on
+        # examples known to be answerable, gated by ensemble
+        # disagreement + distance from the training manifold -- unlike the
+        # linear probe, this never sees the true answerable label during
+        # fitting. Isolates what supervised activation probing specifically
+        # buys over a standard, label-free uncertainty-quantification method
+        # applied to the same frozen activations.
+        answerable_probe_mask = probe_eval["answerable"].astype(bool)
+        ensemble_conf = None
+        if answerable_probe_mask.sum() >= 4:
+            ensemble_probe = fit_bootstrap_ridge(
+                probe_eval["activation"][answerable_probe_mask],
+                probe_data["target"][answerable_probe_mask],
+                n_bootstrap=cfg.n_bootstrap, seed=seed,
+            )
+            ensemble_probe.calibrate_confidence(probe_eval["activation"][answerable_probe_mask])
+            ensemble_conf = ensemble_probe.confidence(test_eval["activation"])
 
         scenario_mae = {}
         for sc in test_scenarios:
@@ -834,6 +853,20 @@ def run_law_audit(
                     "aurc": area_under_risk_coverage(losses, emp_conf),
                     "risk": risks_at_coverages(losses, emp_conf),
                 },
+                "oracle": {
+                    "aurc": area_under_risk_coverage(losses, oracle_conf),
+                    "risk": risks_at_coverages(losses, oracle_conf),
+                },
+                **(
+                    {
+                        "ensemble_disagreement": {
+                            "aurc": area_under_risk_coverage(losses, ensemble_conf),
+                            "risk": risks_at_coverages(losses, ensemble_conf),
+                        }
+                    }
+                    if ensemble_conf is not None
+                    else {}
+                ),
             },
         }
 
@@ -1028,11 +1061,21 @@ def summarize_across_seeds(reports: list[dict]) -> dict:
         nr = collect_clean_mae(reps, "no_retrieval")
         probe_aurc = collect_aurc(reps, "probe")
         random_aurc = collect_aurc(reps, "random")
-        return {
+        result = {
             "cross_vs_low_capacity_mae": paired_significance(cross, low, seed=seed),
             "cross_vs_no_retrieval_mae": paired_significance(cross, nr, seed=seed),
             "probe_vs_random_aurc": paired_significance(probe_aurc, random_aurc, seed=seed),
         }
+        # Isolates what supervised activation probing buys over a
+        # label-free, non-probing UQ baseline (bootstrap-ensemble
+        # disagreement) on the exact same frozen activations. Exploratory,
+        # not part of the core success gate.
+        ensemble_aurc = collect_aurc(reps, "ensemble_disagreement")
+        if len(ensemble_aurc) == len(probe_aurc) and len(ensemble_aurc) > 0:
+            result["probe_vs_ensemble_disagreement_aurc"] = paired_significance(
+                probe_aurc, ensemble_aurc, seed=seed
+            )
+        return result
 
     beer = [r for r in reports if r["law"] == "beer_lambert"]
     mk = [r for r in reports if r["law"] == "moens_korteweg"]
