@@ -17,7 +17,7 @@ import json
 import math
 import random
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
@@ -713,6 +713,7 @@ class LawAuditConfig:
     n_val: int = 120
     n_test: int = 80
     epochs: int = 120
+    lr: float = 1e-3
     batch_size: int = 64
     width: int = 64
     low_width: int = 8
@@ -761,7 +762,7 @@ def run_law_audit(
 
     for model_name, factory in factories.items():
         model = factory()
-        train_regressor(model, train, device, cfg.epochs, cfg.batch_size, normalizer)
+        train_regressor(model, train, device, cfg.epochs, cfg.batch_size, normalizer, lr=cfg.lr)
         probe_eval = evaluate_regressor(model, probe_data, device, cfg.batch_size, normalizer)
         val_eval = evaluate_regressor(model, val_data, device, cfg.batch_size, normalizer)
         test_eval = evaluate_regressor(model, test, device, cfg.batch_size, normalizer)
@@ -1095,6 +1096,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     p.add_argument("--epochs", type=int, default=120)
+    p.add_argument(
+        "--mk-epochs", type=int, default=400,
+        help=(
+            "Moens-Korteweg needs substantially more training than "
+            "Beer-Lambert: extracting a phase-shift (PTT) via cross-attention "
+            "is a harder optimization problem than Beer-Lambert's per-stream "
+            "AC/DC ratio (verified: loss was still improving at 120 epochs "
+            "and had not plateaued until ~400-600)."
+        ),
+    )
+    p.add_argument("--mk-lr", type=float, default=3e-3)
     p.add_argument("--quick", action="store_true")
     return p.parse_args()
 
@@ -1103,18 +1115,21 @@ def main() -> None:
     args = parse_args()
     device = torch.device(args.device)
     cfg_kwargs = {"epochs": args.epochs}
+    mk_epochs, mk_lr = args.mk_epochs, args.mk_lr
     if args.quick:
         args.seeds = [0]
         cfg_kwargs.update(
             n_train=64, n_probe=24, n_val=24, n_test=16,
             epochs=min(args.epochs, 5), n_bootstrap=3,
         )
+        mk_epochs = min(mk_epochs, 5)
     reports = []
     for seed in args.seeds:
         print(f"[physics] seed={seed} device={device}", flush=True)
         cfg = LawAuditConfig(seed=seed, **cfg_kwargs)
+        mk_cfg = replace(cfg, epochs=mk_epochs, lr=mk_lr)
         reports.append(run_beer_audit(cfg, device))
-        reports.append(run_mk_audit(cfg, device))
+        reports.append(run_mk_audit(mk_cfg, device))
     config = {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()}
     path = export_summary(reports, args.output_dir, config)
     print(f"[physics] wrote {path}", flush=True)
