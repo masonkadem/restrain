@@ -48,6 +48,14 @@ from abstention_utils import (  # noqa: E402
 
 FS = 25.0
 WIN_LEN = 128
+# Moens-Korteweg needs its own, much higher sampling rate: at FS=25Hz (40ms
+# period) the entire physiological PTT range (~5-43ms) rounds to exactly 1
+# sample for every example -- the distal waveform's time-shift carries zero
+# BP information regardless of the true value (verified: shift_samples was
+# constant across 2000 generated examples). 400Hz gives ~2-17 sample range,
+# resolvable by cross-attention. Beer-Lambert doesn't need this (its signal
+# is a per-stream AC/DC ratio, not cross-stream timing) so it keeps FS=25.
+MK_FS = 400.0
 
 
 # ── utilities ─────────────────────────────────────────────────────────────────
@@ -120,14 +128,23 @@ def _beer_lambert_intensity(
     gain: float,
     wavelength: str,
 ) -> np.ndarray:
-    """Modified Beer-Lambert: I = I0 * exp(-mu * L) with pulsatile L."""
+    """Modified Beer-Lambert: I = I0 * exp(-mu * L) with pulsatile L.
+
+    mu uses c_total (total hemoglobin concentration, previously threaded
+    through unused) so absorbance actually depends on subject hemoglobin
+    level, matching real pulse oximetry. The extinction-coefficient
+    magnitudes are scaled so mu * path_length lands in a realistic optical
+    density range (~0.3-2.5) instead of ~20-30: at the un-scaled literature
+    magnitudes, exp(-(dc+ac)) underflows toward the additive noise floor and
+    the AC/DC ratio carries essentially no SpO2 information (verified:
+    |corr(ratio_R, SpO2)| ~ 0.03 before this fix).
+    """
     s = spo2 / 100.0
     if wavelength == "red":
-        mu = s * eps_red_hbo2 + (1 - s) * eps_red_hb
+        mu = c_total * (s * eps_red_hbo2 + (1 - s) * eps_red_hb)
     else:
-        mu = s * eps_ir_hbo2 + (1 - s) * eps_ir_hb
+        mu = c_total * (s * eps_ir_hbo2 + (1 - s) * eps_ir_hb)
     mu *= 1.0 + scatter
-    l_t = path_length * (1.0 + 0.08 * pulse)
     dc = baseline_atten + mu * path_length
     ac = mu * path_length * 0.08 * pulse
     intensity = gain * np.exp(-(dc + ac))
@@ -149,8 +166,13 @@ def generate_beer_lambert_sample(
     spo2 = float(rng.uniform(85, 99))
     c_total = float(rng.uniform(0.8, 1.2))
     path_length = float(rng.uniform(0.015, 0.025))
-    eps_red_hbo2, eps_red_hb = 320.0, 8500.0
-    eps_ir_hbo2, eps_ir_hb = 1200.0, 4000.0
+    # Extinction-coefficient *ratios* follow real HbO2/Hb spectra (Hb absorbs
+    # red much more strongly than HbO2; both absorb IR comparably); the
+    # absolute magnitude is scaled down 25x from raw literature values so
+    # mu * path_length lands in a realistic transmission optical-density
+    # range instead of saturating exp() to the noise floor (see docstring).
+    eps_red_hbo2, eps_red_hb = 12.8, 340.0
+    eps_ir_hbo2, eps_ir_hb = 48.0, 160.0
     hr = float(rng.uniform(55, 95))
     pulse = _pulse_wave(win_len, hr)
     baseline = float(rng.uniform(0.5, 1.5))
@@ -237,6 +259,14 @@ class MoensKortewegSample:
     stiffness: float
     answerable: bool
     scenario: str
+    # [path_m, K/100, alpha, availability] where K = E0*h/(rho*D) is the
+    # subject's lumped stiffness/geometry constant. PWV^2 = K*exp(alpha*BP/100),
+    # so (path_m, K, alpha) is exactly the calibration a real cuffless-BP
+    # device needs (typically from an initial cuff-based calibration) to
+    # invert PTT into BP -- without it BP and the unknown geometry/stiffness
+    # trade off against each other with no unique solution. Zeroed with
+    # availability=0 when scenario represents "no prior calibration."
+    calibration: np.ndarray = field(default_factory=lambda: np.zeros(4, dtype=np.float32))
     meta: dict = field(default_factory=dict)
 
 
@@ -254,7 +284,7 @@ def generate_moens_korteweg_sample(
     rng: np.random.Generator,
     scenario: str = "clean",
     win_len: int = WIN_LEN,
-    fs: float = FS,
+    fs: float = MK_FS,
 ) -> MoensKortewegSample:
     bp = float(rng.uniform(90, 150))
     path_m = float(rng.uniform(0.25, 0.45))
@@ -282,6 +312,7 @@ def generate_moens_korteweg_sample(
     distal += noise * 0.5
 
     answerable = True
+    calibration_available = True
     meta = {
         "path_m": path_m, "subject_cal": subject_cal,
         "e0": e0, "alpha": alpha,
@@ -290,9 +321,11 @@ def generate_moens_korteweg_sample(
     if scenario == "missing_path_length":
         path_m = float("nan")
         answerable = False
+        calibration_available = False
     elif scenario == "missing_stiffness_cal":
         subject_cal = float("nan")
         answerable = False
+        calibration_available = False
     elif scenario == "missing_distal":
         distal = np.zeros_like(distal)
         answerable = False
@@ -311,9 +344,18 @@ def generate_moens_korteweg_sample(
         pwv *= float(rng.uniform(1.2, 1.5))
         ptt_ms = 1000.0 * path_m / pwv
 
+    k_lumped = e0 * thickness / (rho * diameter)
+    if calibration_available:
+        calibration = np.array(
+            [path_m, k_lumped / 100.0, alpha, 1.0], dtype=np.float32
+        )
+    else:
+        calibration = np.zeros(4, dtype=np.float32)
+
     return MoensKortewegSample(
         proximal=proximal, distal=distal, bp=bp,
         ptt_ms=ptt_ms, pwv=pwv, stiffness=stiffness,
+        calibration=calibration,
         answerable=answerable, scenario=scenario, meta=meta,
     )
 
@@ -368,6 +410,7 @@ def mk_to_tensors(samples: list[MoensKortewegSample]) -> dict:
     return {
         "stream_a": np.stack([s.proximal for s in samples]),
         "stream_b": np.stack([s.distal for s in samples]),
+        "calibration": np.stack([s.calibration for s in samples]),
         "target": np.array([s.bp for s in samples], dtype=np.float32),
         "ptt_ms": np.array([s.ptt_ms for s in samples], dtype=np.float32),
         "pwv": np.array([s.pwv for s in samples], dtype=np.float32),
@@ -379,30 +422,94 @@ def mk_to_tensors(samples: list[MoensKortewegSample]) -> dict:
 # ── models ────────────────────────────────────────────────────────────────────
 
 
-class TwoStreamCrossAttention(nn.Module):
-    """Cross-attention between two 1D waveform streams."""
+def _positional_encoding(n_positions: int, dim: int) -> torch.Tensor:
+    """Deterministic sinusoidal encoding giving each timestep an identity.
 
-    def __init__(self, win_len: int, width: int = 64, hidden: int = 64):
+    Without this, a per-timestep encoder that only sees a raw amplitude
+    scalar has no notion of sequence position, so cross-attention can only
+    match by amplitude similarity -- it cannot express anything like a
+    cross-correlation / time-lag estimate, which is exactly what recovering
+    PTT from a phase-shifted periodic wave requires (verified: MK stayed
+    stuck at the predict-mean baseline even after fixing normalization and
+    exposing calibration, until this was added).
+    """
+    positions = torch.arange(n_positions, dtype=torch.float32).unsqueeze(1)
+    freqs = torch.exp(
+        torch.arange(0, dim, 2, dtype=torch.float32) * (-math.log(10_000.0) / dim)
+    )
+    encoding = torch.zeros(n_positions, dim)
+    encoding[:, 0::2] = torch.sin(positions * freqs)
+    encoding[:, 1::2] = torch.cos(positions * freqs[: encoding[:, 1::2].shape[1]])
+    return encoding
+
+
+class TwoStreamCrossAttention(nn.Module):
+    """Cross-attention between two 1D waveform streams, plus a symmetric
+    per-stream pooling branch.
+
+    Beer-Lambert's ratio-R and Moens-Korteweg's PTT are different kinds of
+    statistics: ratio-R is a symmetric per-stream (mean, std) computation
+    (verified: a Ridge fit on [a.mean, a.std, b.mean, b.std] alone recovers
+    SpO2 well), while PTT is a cross-stream *timing* relationship that
+    mean/std cannot see (verified: the same pooled features carry ~zero BP
+    signal for Moens-Korteweg, since mean/std of a periodic wave is
+    shift-invariant). An "adequate" architecture needs both pathways to be a
+    genuine superset of the pooling-only control -- a pure cross-attention
+    retriever without the pooling branch loses to TwoStreamGlobalPool on
+    Beer-Lambert despite being more complex, because it has no efficient way
+    to express a simple mean/std computation through an attention bottleneck.
+    """
+
+    def __init__(
+        self, win_len: int, width: int = 64, hidden: int = 64, calibration_dim: int = 0,
+        pos_dim: int = 8,
+    ):
         super().__init__()
         self.width = width
+        self.calibration_dim = calibration_dim
+        self.register_buffer("pos_encoding", _positional_encoding(win_len, pos_dim))
         self.enc_a = nn.Sequential(
-            nn.Linear(1, hidden), nn.ReLU(), nn.Linear(hidden, width)
+            nn.Linear(1 + pos_dim, hidden), nn.ReLU(), nn.Linear(hidden, width)
         )
         self.enc_b = nn.Sequential(
-            nn.Linear(1, hidden), nn.ReLU(), nn.Linear(hidden, width)
+            nn.Linear(1 + pos_dim, hidden), nn.ReLU(), nn.Linear(hidden, width)
         )
+        self.pool_proj = nn.Sequential(
+            nn.Linear(4, hidden), nn.ReLU(), nn.Linear(hidden, width)
+        )
+        n_branches = 2
+        if calibration_dim > 0:
+            self.cal_proj = nn.Sequential(
+                nn.Linear(calibration_dim, hidden), nn.ReLU(), nn.Linear(hidden, width)
+            )
+            n_branches = 3
         self.output = nn.Sequential(
-            nn.Linear(width, hidden), nn.ReLU(), nn.Linear(hidden, 1)
+            nn.Linear(n_branches * width, hidden), nn.ReLU(), nn.Linear(hidden, 1)
         )
 
-    def forward(self, a: torch.Tensor, b: torch.Tensor, return_features: bool = False):
+    def forward(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        calibration: torch.Tensor | None = None,
+        return_features: bool = False,
+    ):
         # a, b: (B, L)
-        qa = self.enc_a(a.unsqueeze(-1))
-        kb = self.enc_b(b.unsqueeze(-1))
+        pos = self.pos_encoding.unsqueeze(0).expand(a.shape[0], -1, -1)
+        qa = self.enc_a(torch.cat([a.unsqueeze(-1), pos], dim=-1))
+        kb = self.enc_b(torch.cat([b.unsqueeze(-1), pos], dim=-1))
         vb = kb
         scores = torch.bmm(qa, kb.transpose(1, 2)) / math.sqrt(self.width)
         attn = scores.softmax(dim=-1)
-        ctx = torch.bmm(attn, vb).mean(dim=1)
+        ctx_attn = torch.bmm(attn, vb).mean(dim=1)
+        pooled = torch.stack([a.mean(1), a.std(1), b.mean(1), b.std(1)], dim=-1)
+        ctx_pool = self.pool_proj(pooled)
+        ctx_parts = [ctx_attn, ctx_pool]
+        if self.calibration_dim > 0:
+            if calibration is None:
+                raise ValueError("Model configured with calibration_dim>0 but no calibration passed.")
+            ctx_parts.append(self.cal_proj(calibration))
+        ctx = torch.cat(ctx_parts, dim=-1)
         pred = self.output(ctx).squeeze(-1)
         if return_features:
             return pred, ctx, attn
@@ -412,23 +519,93 @@ class TwoStreamCrossAttention(nn.Module):
 class TwoStreamGlobalPool(nn.Module):
     """Control: global pool both streams, no indexed cross-stream retrieval."""
 
-    def __init__(self, win_len: int, width: int = 64, hidden: int = 64):
+    def __init__(
+        self, win_len: int, width: int = 64, hidden: int = 64, calibration_dim: int = 0
+    ):
         super().__init__()
+        self.calibration_dim = calibration_dim
         self.net = nn.Sequential(
-            nn.Linear(4, hidden), nn.ReLU(),
+            nn.Linear(4 + calibration_dim, hidden), nn.ReLU(),
             nn.Linear(hidden, hidden), nn.ReLU(),
             nn.Linear(hidden, 1),
         )
 
-    def forward(self, a: torch.Tensor, b: torch.Tensor, return_features: bool = False):
+    def forward(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        calibration: torch.Tensor | None = None,
+        return_features: bool = False,
+    ):
         feat = torch.stack([
             a.mean(1), a.std(1), b.mean(1), b.std(1),
         ], dim=-1)
+        if self.calibration_dim > 0:
+            if calibration is None:
+                raise ValueError("Model configured with calibration_dim>0 but no calibration passed.")
+            feat = torch.cat([feat, calibration], dim=-1)
         pred = self.net(feat).squeeze(-1)
         ctx = feat
         if return_features:
             return pred, ctx, None
         return pred
+
+
+@dataclass
+class Normalizer:
+    """Fixed affine rescaling fit on the training split only.
+
+    Streams get one shared global mean/std (not per-example) so the
+    per-example DC-offset differences that ratio_R depends on are preserved
+    -- this only fixes gradient conditioning, it does not touch the signal.
+    Target standardization matters because raw MSE loss on targets ~O(90-150)
+    with small-magnitude inputs gives Adam a poorly-conditioned problem: the
+    net converges instantly to a near-constant predictor and then never
+    escapes it, regardless of training budget (verified empirically).
+    """
+
+    stream_mean: float
+    stream_std: float
+    target_mean: float
+    target_std: float
+    # Per-column stats for the optional calibration vector (Moens-Korteweg
+    # only). Unlike streams, calibration entries are heterogeneous scalars
+    # (path length, lumped stiffness, alpha, availability flag) on very
+    # different natural scales, so each column is standardized independently.
+    calibration_mean: np.ndarray | None = None
+    calibration_std: np.ndarray | None = None
+
+    def transform_streams(self, a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        return (a - self.stream_mean) / self.stream_std, (b - self.stream_mean) / self.stream_std
+
+    def transform_target(self, y: torch.Tensor) -> torch.Tensor:
+        return (y - self.target_mean) / self.target_std
+
+    def inverse_target(self, y: torch.Tensor) -> torch.Tensor:
+        return y * self.target_std + self.target_mean
+
+    def transform_calibration(self, c: np.ndarray) -> np.ndarray:
+        if self.calibration_mean is None:
+            return c
+        return (c - self.calibration_mean) / self.calibration_std
+
+
+def fit_normalizer(data: dict) -> Normalizer:
+    streams = np.concatenate([data["stream_a"].reshape(-1), data["stream_b"].reshape(-1)])
+    target = np.asarray(data["target"], dtype=float)
+    calibration_mean = calibration_std = None
+    if "calibration" in data:
+        cal = np.asarray(data["calibration"], dtype=float)
+        calibration_mean = cal.mean(axis=0)
+        calibration_std = cal.std(axis=0) + 1e-8
+    return Normalizer(
+        stream_mean=float(streams.mean()),
+        stream_std=float(streams.std() + 1e-8),
+        target_mean=float(target.mean()),
+        target_std=float(target.std() + 1e-8),
+        calibration_mean=calibration_mean,
+        calibration_std=calibration_std,
+    )
 
 
 def train_regressor(
@@ -437,12 +614,17 @@ def train_regressor(
     device: torch.device,
     epochs: int,
     batch_size: int,
+    normalizer: Normalizer,
     lr: float = 1e-3,
 ) -> list[float]:
     model.to(device)
-    a = torch.from_numpy(data["stream_a"]).float()
-    b = torch.from_numpy(data["stream_b"]).float()
-    y = torch.from_numpy(data["target"]).float()
+    sa, sb = normalizer.transform_streams(data["stream_a"], data["stream_b"])
+    a = torch.from_numpy(sa).float()
+    b = torch.from_numpy(sb).float()
+    cal = None
+    if "calibration" in data:
+        cal = torch.from_numpy(normalizer.transform_calibration(data["calibration"])).float()
+    y = normalizer.transform_target(torch.from_numpy(data["target"]).float())
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(epochs, 1))
     losses = []
@@ -452,7 +634,8 @@ def train_regressor(
         for start in range(0, len(a), batch_size):
             idx = order[start : start + batch_size]
             ba, bb, by = a[idx].to(device), b[idx].to(device), y[idx].to(device)
-            pred = model(ba, bb)
+            bc = cal[idx].to(device) if cal is not None else None
+            pred = model(ba, bb, calibration=bc)
             loss = ((pred - by) ** 2).mean()
             opt.zero_grad()
             loss.backward()
@@ -464,18 +647,24 @@ def train_regressor(
 
 
 def evaluate_regressor(
-    model: nn.Module, data: dict, device: torch.device, batch_size: int
+    model: nn.Module, data: dict, device: torch.device, batch_size: int, normalizer: Normalizer
 ) -> dict:
     model.eval()
-    a = torch.from_numpy(data["stream_a"]).float()
-    b = torch.from_numpy(data["stream_b"]).float()
+    sa, sb = normalizer.transform_streams(data["stream_a"], data["stream_b"])
+    a = torch.from_numpy(sa).float()
+    b = torch.from_numpy(sb).float()
+    cal = None
+    if "calibration" in data:
+        cal = torch.from_numpy(normalizer.transform_calibration(data["calibration"])).float()
     y = torch.from_numpy(data["target"]).float()
     preds, acts = [], []
     with torch.no_grad():
         for start in range(0, len(a), batch_size):
             ba = a[start : start + batch_size].to(device)
             bb = b[start : start + batch_size].to(device)
-            pred, ctx, _ = model(ba, bb, return_features=True)
+            bc = cal[start : start + batch_size].to(device) if cal is not None else None
+            pred, ctx, _ = model(ba, bb, calibration=bc, return_features=True)
+            pred = normalizer.inverse_target(pred)
             preds.append(pred.cpu().numpy())
             acts.append(ctx.cpu().numpy())
     pred = np.concatenate(preds)
@@ -555,20 +744,27 @@ def run_law_audit(
     test = {k: np.concatenate([p[k] for p in test_parts]) for k in stack_keys}
     test["scenario"] = [s for p in test_parts for s in p["scenario"]]
 
+    normalizer = fit_normalizer(train)
+    calibration_dim = train["calibration"].shape[-1] if "calibration" in train else 0
+
     factories = {
-        "cross_attention": lambda: TwoStreamCrossAttention(WIN_LEN, cfg.width),
-        "low_capacity": lambda: TwoStreamCrossAttention(WIN_LEN, cfg.low_width),
-        "no_retrieval": lambda: TwoStreamGlobalPool(WIN_LEN),
+        "cross_attention": lambda: TwoStreamCrossAttention(
+            WIN_LEN, cfg.width, calibration_dim=calibration_dim
+        ),
+        "low_capacity": lambda: TwoStreamCrossAttention(
+            WIN_LEN, cfg.low_width, calibration_dim=calibration_dim
+        ),
+        "no_retrieval": lambda: TwoStreamGlobalPool(WIN_LEN, calibration_dim=calibration_dim),
     }
     results = {}
     intervention_payload = None
 
     for model_name, factory in factories.items():
         model = factory()
-        train_regressor(model, train, device, cfg.epochs, cfg.batch_size)
-        probe_eval = evaluate_regressor(model, probe_data, device, cfg.batch_size)
-        val_eval = evaluate_regressor(model, val_data, device, cfg.batch_size)
-        test_eval = evaluate_regressor(model, test, device, cfg.batch_size)
+        train_regressor(model, train, device, cfg.epochs, cfg.batch_size, normalizer)
+        probe_eval = evaluate_regressor(model, probe_data, device, cfg.batch_size, normalizer)
+        val_eval = evaluate_regressor(model, val_data, device, cfg.batch_size, normalizer)
+        test_eval = evaluate_regressor(model, test, device, cfg.batch_size, normalizer)
 
         ans_probe = fit_answerability_probe(
             probe_eval["activation"], probe_eval["answerable"], seed
