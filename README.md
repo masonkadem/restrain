@@ -161,6 +161,31 @@ and a plausible-but-mismatched channel. Outputs under `results/physio_poc/`.
 **Reproduce and read it in one notebook:**
 `analysis/physio_gating_proposal.ipynb` (proposal-ready, ~3 min, CPU).
 
+### Model auditing: decoding PTT from a model's activations
+
+```bash
+python analysis/ptt_gate.py
+```
+
+A model-certification demo. A model maps pulse waveforms (+ calibration) to
+blood pressure; we check whether it encodes the physically-required
+pulse-transit-time (PTT) — **using only synthetic waveforms, no access to the
+model's original training data**. Two per-input gates on the frozen model:
+
+- **threshold** — is the decoded PTT in physiological range? (catches gross
+  failures; here it catches *nothing* — the model always decodes a plausible
+  in-range PTT even when wrong)
+- **consistency** — does the decoded PTT (from activations) match the PTT
+  *measured directly from the raw signal* (cross-correlation)? This catches
+  the failures the threshold misses.
+
+Result: PTT decodes at R² ≈ 1.0 on clean data; the consistency gate catches a
+missing distal channel (AUROC 1.00) and a novel pulse morphology the model
+misreads (0.86), but **not** a wrong-subject calibration (0.51) — because the
+waveform PTT is genuinely correct there, so the failure is a non-observable
+identifiability problem, not a PTT-competence one. Output:
+`results/ptt_gate/ptt_gate.png`.
+
 Unit tests:
 
 ```bash

@@ -1,0 +1,55 @@
+{
+  "config": {
+    "output_dir": "results/ptt_gate",
+    "seeds": [
+      0,
+      1,
+      2
+    ],
+    "n_train": 3000,
+    "n_probe": 800,
+    "n_test": 800,
+    "epochs": 200,
+    "quick": false
+  },
+  "ptt_r2": 0.9982208609580994,
+  "clean_bp_mae": 3.705423434575399,
+  "detection": {
+    "missing_distal": {
+      "threshold": {
+        "mean": 0.5,
+        "std": 0.0
+      },
+      "consistency": {
+        "mean": 0.9987499999999999,
+        "std": 0.0017677669529663834
+      }
+    },
+    "morphology_shift": {
+      "threshold": {
+        "mean": 0.5020833333333333,
+        "std": 0.002124591463996999
+      },
+      "consistency": {
+        "mean": 0.8554580729166666,
+        "std": 0.06378322173049773
+      }
+    },
+    "wrong_calibration": {
+      "threshold": {
+        "mean": 0.5,
+        "std": 0.0
+      },
+      "consistency": {
+        "mean": 0.5122393229166666,
+        "std": 0.013684748185454697
+      }
+    }
+  },
+  "bp_mae": {
+    "clean": 3.684447447458903,
+    "missing_distal": 26.482667287190754,
+    "morphology_shift": 17.13053862253825,
+    "wrong_calibration": 32.928296407063804
+  }
+}
