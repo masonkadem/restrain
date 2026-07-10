@@ -146,8 +146,9 @@ def plot(agg: dict, output_dir: Path) -> None:
     fig.text(0.02, 0.95, "Right for the wrong reason: what accuracy hides, and which audit reveals it",
              fontsize=13, fontweight="bold", color=INK)
     fig.text(0.02, 0.905,
-             "Two same-architecture models, equally accurate on the clean population. Decodability is "
-             "fooled; the causal (usage) audit is not.", fontsize=9.5, color="#454b4c")
+             "Same architecture. The shortcut model is even more accurate on clean data — you would ship it — "
+             "yet it collapses on a new population. Decodability is fooled; the causal audit is not.",
+             fontsize=9.5, color="#454b4c")
 
     # Panel 1: clean vs shifted MAE
     ax = fig.add_subplot(gs[0, 0]); bw = 0.36
@@ -159,7 +160,7 @@ def plot(agg: dict, output_dir: Path) -> None:
                label=("clean population" if split == "clean_mae" else "shifted population"))
     ax.set_xticks(x); ax.set_xticklabels([MLAB[n] for n in names], fontsize=8.5)
     ax.set_ylabel("BP error — MAE (mmHg)", fontsize=9)
-    ax.set_title("① Accuracy: equal on clean,\ndiverges on a new population", fontsize=9.5, color=INK, loc="left")
+    ax.set_title("① Accuracy: shortcut wins on clean,\ncollapses on a new population", fontsize=9.5, color=INK, loc="left")
     ax.legend(frameon=False, fontsize=8, loc="upper left")
     _style(ax)
 
