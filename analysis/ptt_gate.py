@@ -67,9 +67,20 @@ def _pulse(win, hr, fs, harmonic=0.0, phase=0.0):
     return w
 
 
-def generate(n: int, condition: str, seed: int) -> dict:
+def generate(n: int, condition: str, seed: int,
+             amp_gain: float = 0.0, amp_decorrelate: bool = False) -> dict:
     """Waveform Moens-Korteweg. Returns proximal+distal streams, calibration,
-    BP, plus the true and signal-measured PTT (in samples)."""
+    BP, plus the true and signal-measured PTT (in samples).
+
+    amp_gain > 0 injects a *spurious* population confound: the waveform
+    amplitude is scaled by a factor linear in BP, so amplitude carries BP
+    information that has nothing to do with the pulse-transit-time physics. A
+    model can exploit it to get good accuracy for the wrong reason. Setting
+    amp_decorrelate=True (the shifted population) drives the amplitude factor
+    from an independent BP draw, so the confound no longer predicts BP -- any
+    model that relied on it collapses. Default amp_gain=0 leaves the base
+    task untouched.
+    """
     rng = np.random.default_rng(seed)
     bp = rng.uniform(90.0, 150.0, size=n)
     K = rng.uniform(0.8, 2.2, size=n)
@@ -98,6 +109,12 @@ def generate(n: int, condition: str, seed: int) -> dict:
         d = np.interp(grid - lag[i], grid, d_shape, left=0.0, right=0.0) * damp
         prox[i] = (p + noise).astype(np.float32)
         dist[i] = (d + 0.5 * noise).astype(np.float32)
+
+    if amp_gain > 0.0:
+        driver = rng.uniform(90.0, 150.0, size=n) if amp_decorrelate else bp
+        amp = (1.0 + amp_gain * (driver - 120.0) / 60.0).astype(np.float32)
+        prox *= amp[:, None]
+        dist *= amp[:, None]
 
     if condition == "missing_distal":
         dist[:] = 0.0
