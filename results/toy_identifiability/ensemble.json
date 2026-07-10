@@ -1,0 +1,66 @@
+{
+  "claim": "Ensemble disagreement and Mahalanobis OOD scores rescue detection of off-manifold corruptions that a single-pass probe (trained on a different corruption) misses, but no observational detector catches an on-manifold (resampled) corruption -- the boundary is data-manifold membership, not the number of forward passes.",
+  "config": {
+    "output_dir": "results/toy_identifiability",
+    "seeds": [
+      0,
+      1,
+      2
+    ],
+    "k_core": 8,
+    "k_periph": 8,
+    "sigma": 0.1,
+    "n_ensemble": 8,
+    "n_train": 3000,
+    "n_probe": 600,
+    "n_test": 800,
+    "hidden": 64,
+    "epochs": 250,
+    "demo_f": 0.6,
+    "quick": false
+  },
+  "detection_auroc": {
+    "zeroed": {
+      "probe_zeroed": {
+        "mean": 0.919315625,
+        "std": 0.01237615130376772
+      },
+      "ensemble": {
+        "mean": 0.28531510416666667,
+        "std": 0.011448391354467007
+      },
+      "mahalanobis": {
+        "mean": 0.14500989583333332,
+        "std": 0.013306618684059118
+      }
+    },
+    "shifted": {
+      "probe_zeroed": {
+        "mean": 0.040759374999999994,
+        "std": 0.00764605834740706
+      },
+      "ensemble": {
+        "mean": 0.9552510416666667,
+        "std": 0.0008590078129697173
+      },
+      "mahalanobis": {
+        "mean": 0.9874609375,
+        "std": 0.0010192539333891567
+      }
+    },
+    "resampled": {
+      "probe_zeroed": {
+        "mean": 0.49264973958333336,
+        "std": 0.002017250468345473
+      },
+      "ensemble": {
+        "mean": 0.521325,
+        "std": 0.016503123865824008
+      },
+      "mahalanobis": {
+        "mean": 0.4907119791666667,
+        "std": 0.010507774925067093
+      }
+    }
+  }
+}

@@ -126,7 +126,19 @@ def generate(
     corruption: str,
     seed: int,
 ) -> dict:
-    """Generate a batch. corruption in {"clean", "zeroed", "resampled"}."""
+    """Generate a batch. corruption in {"clean", "zeroed", "resampled", "shifted"}.
+
+    All corruptions destroy the peripheral information y depends on (so the
+    input is unanswerable), differing only in how visible that is:
+      - "zeroed":    peripheral -> 0 (degenerate, off the training manifold).
+      - "resampled": peripheral -> independent N(0,1) draw. Marginally
+                     identical to clean -- an information-theoretic floor.
+      - "shifted":   peripheral -> independent draw from an inflated N(0,3^2).
+                     Information is lost like resampled, but the input is now
+                     off the training manifold (large magnitudes) -- so it is
+                     detectable by out-of-distribution signals even though it
+                     carries no missing-channel pattern.
+    """
     rng = np.random.default_rng(seed)
     z_core = rng.normal(size=(n, inst.k_core))
     z_periph = rng.normal(size=(n, inst.k_periph))
@@ -143,6 +155,9 @@ def generate(
         answerable[:] = 0
     elif corruption == "resampled":
         x_periph = rng.normal(size=(n, inst.k_periph))
+        answerable[:] = 0
+    elif corruption == "shifted":
+        x_periph = rng.normal(scale=3.0, size=(n, inst.k_periph))
         answerable[:] = 0
     x = np.concatenate([z_core, x_periph], axis=1).astype(np.float32)
     return {"x": x, "y": y.astype(np.float32), "answerable": answerable}

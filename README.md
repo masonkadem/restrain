@@ -132,6 +132,19 @@ approximately low-rank — one dominant "answerability axis" carries ~88% of
 the detection, with a tail smeared over roughly the corrupted-block
 dimensionality (`results/toy_identifiability/toy_geometry.png`).
 
+Can an ensemble break the single-pass ceiling?
+
+```bash
+python analysis/toy_ensemble.py
+```
+
+Pits three detectors (single-pass probe, label-free ensemble disagreement,
+label-free Mahalanobis OOD) against three corruptions. Ensembles/OOD **do**
+catch a large off-manifold corruption the probe misses (label-free), but
+every detector has a blind spot and **nothing** catches an on-manifold
+corruption — the boundary is data-manifold membership, not the number of
+forward passes (`results/toy_identifiability/toy_ensemble.png`).
+
 Unit tests:
 
 ```bash

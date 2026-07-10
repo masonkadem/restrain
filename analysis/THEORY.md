@@ -175,3 +175,45 @@ input distribution is undetectable by single-pass activation probing, no
 matter how wrong the answer becomes.** Escaping that ceiling requires signals
 a single forward pass does not have — ensembles, test-time perturbations, or
 access to the corrupted variable itself.
+
+## Empirical check 4: do ensembles break the ceiling? (`analysis/toy_ensemble.py`)
+
+We tested three detectors against three corruptions at matched f
+(`results/toy_identifiability/ensemble.json`, 3 seeds, K=8 readouts). The
+detectors: a single-pass linear probe *trained on the zeroed corruption
+only*; label-free **ensemble disagreement** (std across independently trained
+readouts); and a label-free **Mahalanobis** OOD score on the activations. The
+corruptions: `zeroed` (peripheral → 0, a *central/degenerate* activation
+point), `shifted` (peripheral → inflated N(0, 3²) draw, *off-manifold*), and
+`resampled` (peripheral → N(0,1) draw, *typical/on-manifold*).
+
+| detection AUROC | zeroed | shifted | resampled |
+|---|---|---|---|
+| single-pass probe (trained on zeroed) | **0.92** | 0.04 | 0.49 |
+| ensemble disagreement (label-free) | 0.29 | **0.96** | 0.52 |
+| Mahalanobis OOD (label-free) | 0.15 | **0.99** | 0.49 |
+
+Three findings, all robust across seeds:
+
+1. **Ensembles *do* break a ceiling — just not the fundamental one.** They
+   catch the off-manifold `shifted` corruption at AUROC 0.96, label-free,
+   which the zeroed-trained probe not only misses but *anti-detects* (0.04 —
+   it learned "large peripheral ⇒ answerable" and is confidently wrong). So
+   ensemble/OOD signals genuinely generalize to novel off-manifold
+   corruptions a single trained probe cannot.
+
+2. **Every detector has a blind spot; none is universal.** The ensemble and
+   Mahalanobis are *anti-correlated* on `zeroed` (0.29, 0.15): the zeroed
+   input sits at the *center* of the activation distribution (all peripheral
+   contributions vanish, so the models agree and the Mahalanobis distance is
+   small), so distance/disagreement scores call it *more* answerable. Only
+   the pattern-matching probe catches it. Coverage requires *combining*
+   detectors, not any single one.
+
+3. **The on-manifold floor is beaten by nothing.** All three detectors sit at
+   chance on `resampled` (0.49–0.52). This is the corrected boundary: it is
+   not "one forward pass vs many" — it is **data-manifold membership**. A
+   corruption whose marginal input distribution is identical to clean data is
+   information-theoretically undetectable by *any* observational method,
+   because the information needed to flag it (the true withheld value) is
+   simply absent from what any model, single or ensembled, can observe.

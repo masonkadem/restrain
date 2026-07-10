@@ -97,5 +97,33 @@ class ToyGeometryTests(unittest.TestCase):
         self.assertLess(curve[1], 0.7)
 
 
+class ToyEnsembleTests(unittest.TestCase):
+    def test_shifted_is_off_manifold_resampled_is_not(self) -> None:
+        # The ensemble experiment's premise: "shifted" peripheral values are
+        # large (off-manifold), "resampled" match the clean N(0,1) scale.
+        inst = make_instrument(seed=0)
+        kc = inst.k_core
+        clean = generate(inst, 2000, 0.5, "clean", seed=1)["x"][:, kc:]
+        shifted = generate(inst, 2000, 0.5, "shifted", seed=1)["x"][:, kc:]
+        resampled = generate(inst, 2000, 0.5, "resampled", seed=1)["x"][:, kc:]
+        self.assertGreater(shifted.std(), 2.0 * clean.std())
+        self.assertAlmostEqual(resampled.std(), clean.std(), delta=0.15)
+
+    def test_ensemble_rescues_shifted_not_resampled(self) -> None:
+        # Ensemble disagreement should detect off-manifold (shifted) corruption
+        # well above chance, but stay at chance on on-manifold (resampled).
+        import argparse
+
+        from toy_ensemble import run_seed
+        inst = make_instrument(seed=0)
+        cfg = argparse.Namespace(
+            n_ensemble=5, n_train=800, n_probe=200, n_test=300,
+            hidden=32, epochs=60, demo_f=0.6,
+        )
+        r = run_seed(inst, cfg.demo_f, cfg, seed=0)
+        self.assertGreater(r["detection"]["shifted"]["ensemble"], 0.75)
+        self.assertLess(abs(r["detection"]["resampled"]["ensemble"] - 0.5), 0.12)
+
+
 if __name__ == "__main__":
     unittest.main()

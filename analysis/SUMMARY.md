@@ -116,6 +116,22 @@ results directly (missing channels are input-visible → detected; non-missing
 corruptions that preserve the input distribution → undetectable). See
 `THEORY.md` §"Empirical check 3" for the corrected proposition.
 
+**Ensemble follow-up — does the ceiling break?** (`analysis/toy_ensemble.py`,
+`THEORY.md` §"Empirical check 4"). Three detectors — a single-pass probe,
+label-free ensemble disagreement, label-free Mahalanobis OOD — against three
+corruptions. Ensembles/OOD **do** break the *off-manifold* ceiling: they catch
+a large off-distribution corruption at AUROC 0.96/0.99, label-free, that the
+zeroed-trained probe *anti-detects* (0.04). But every detector has a blind spot
+(ensemble/OOD are anti-correlated on the central-degenerate "zeroed"
+corruption, 0.29/0.15 — only the pattern probe catches it), and **nothing**
+catches the on-manifold "resampled" corruption (all at chance). The corrected
+boundary: detectability is governed by **data-manifold membership**, not the
+number of forward passes. Practically: combine a supervised probe (known
+patterns) with label-free ensemble/OOD (novel off-manifold shifts), but a
+plausible-and-in-distribution-but-wrong input is unflaggable from observation
+alone — it needs access to the withheld variable (a redundant sensor, a
+calibration step).
+
 **Pre-registered verdict:** neither law clears the full five-criterion bar.
 The honest one-line reading: *the abstention machinery works, but current
 detection largely reflects missing information, not subtly-wrong-but-complete
