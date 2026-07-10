@@ -117,6 +117,21 @@ magnitude is undetectable and gating gains nothing — even at γ = 171.
 `results/toy_identifiability/toy_gating.png` (four panels, including the
 canonical risk–coverage "the model restrains itself" curve).
 
+**Reproduce it in one notebook:** `analysis/identifiability_toy_model.ipynb`
+runs the whole thing top to bottom (~2 min, CPU) with a plain-language
+explanation of each step.
+
+Geometry of the answerability signal:
+
+```bash
+python analysis/toy_geometry.py
+```
+
+Asks *how* "unanswerable" is arranged in activation space: it is
+approximately low-rank — one dominant "answerability axis" carries ~88% of
+the detection, with a tail smeared over roughly the corrupted-block
+dimensionality (`results/toy_identifiability/toy_geometry.png`).
+
 Unit tests:
 
 ```bash

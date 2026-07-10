@@ -19,6 +19,11 @@ from toy_identifiability import (  # noqa: E402
     make_instrument,
     run_condition,
 )
+from toy_geometry import (  # noqa: E402
+    auroc_along,
+    inlp_rank_curve,
+    mean_difference_direction,
+)
 
 
 class ToyIdentifiabilityTests(unittest.TestCase):
@@ -62,6 +67,34 @@ class ToyIdentifiabilityTests(unittest.TestCase):
         self.assertLess(resampled["detection_auroc"], 0.6)
         # And gating benefit follows detectability, not error magnitude.
         self.assertGreater(zeroed["selective_gain"], 0.3)
+
+
+class ToyGeometryTests(unittest.TestCase):
+    def _separable(self, seed: int = 0):
+        rng = np.random.default_rng(seed)
+        pos = rng.normal(loc=2.0, size=(80, 5))
+        neg = rng.normal(loc=-2.0, size=(80, 5))
+        feats = np.concatenate([pos, neg])
+        labels = np.concatenate([np.ones(80, int), np.zeros(80, int)])
+        return feats, labels
+
+    def test_mean_difference_direction_is_unit(self) -> None:
+        feats, labels = self._separable()
+        d = mean_difference_direction(feats, labels)
+        self.assertAlmostEqual(float(np.linalg.norm(d)), 1.0, places=6)
+
+    def test_auroc_along_separates(self) -> None:
+        feats, labels = self._separable()
+        d = mean_difference_direction(feats, labels)
+        self.assertGreater(auroc_along(feats, labels, d), 0.95)
+
+    def test_inlp_erases_a_rank1_signal(self) -> None:
+        # A signal that lives in exactly one direction should be erased by one
+        # INLP removal (AUROC drops from high to ~chance).
+        feats, labels = self._separable()
+        curve = inlp_rank_curve(feats, labels, max_dirs=3, seed=0)
+        self.assertGreater(curve[0], 0.9)
+        self.assertLess(curve[1], 0.7)
 
 
 if __name__ == "__main__":
