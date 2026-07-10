@@ -145,6 +145,22 @@ every detector has a blind spot and **nothing** catches an on-manifold
 corruption — the boundary is data-manifold membership, not the number of
 forward passes (`results/toy_identifiability/toy_ensemble.png`).
 
+### Physics-grounded gating proof of concept
+
+```bash
+python analysis/physio_gating_poc.py
+```
+
+The clean toy-task design instantiated on two *real governing laws*
+(Beer–Lambert → SpO₂, Moens–Korteweg → BP). Trains a model on the law,
+freezes it, and gates on a linear probe of its activations. Produces, per
+law, a risk–coverage curve (the model restraining itself: probe hugs the
+oracle, far below random) and a "who catches which failure" panel across
+three clinical failure modes — missing channel, saturated/distorted channel,
+and a plausible-but-mismatched channel. Outputs under `results/physio_poc/`.
+**Reproduce and read it in one notebook:**
+`analysis/physio_gating_proposal.ipynb` (proposal-ready, ~3 min, CPU).
+
 Unit tests:
 
 ```bash
