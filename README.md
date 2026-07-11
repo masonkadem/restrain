@@ -92,45 +92,59 @@ Report negative/mixed results directly.
 ## 3. Causal-use audit toy (encoding vs. causal use)
 
 ```bash
-python analysis/causal_mediation_toy.py
-python analysis/causal_mediation_toy.py --quick
+python analysis/causal_mediation_toy.py --law blood_pressure --quick
+python analysis/causal_mediation_toy.py --law saturation --quick
 ```
 
-A minimal, self-contained demonstration that decodability is not trust. The
-governing law is a two-component saturation `y = v_i / (v_i + v_j)` (a
-Beer–Lambert-flavored ratio). A two-query cross-attention retriever names slots
-`i` and `j`, retrieves their values, and predicts `y`.
+A minimal, self-contained demonstration that *decodability is not trust*. Two
+governing laws are supported, each with a two-component structure where the
+answer is only determined when **both** components are used:
 
-Two models share the same architecture and task. The **law** model is trained
-where component `j` varies; the **shortcut** model is trained where `j` is
-effectively constant, so reading `i` alone predicts `y` — the everyday failure
-of a confounded or narrow training set.
+- `blood_pressure` — `BP = P₀ + S·[2 ln(L/PTT) − ln(E₀/E_ref)]` (Moens–Korteweg:
+  pulse transit time **PTT** plus a per-subject arterial-stiffness calibration
+  **E₀**). Uncalibrated PTT does not determine BP — the textbook cuffless-BP
+  failure mode.
+- `saturation` — `y = v_i / (v_i + v_j)` (Beer–Lambert-flavored ratio).
 
-On the validation distribution a practitioner actually has (where `j` barely
-varies) the two are indistinguishable, and *this is the point*:
+A two-query cross-attention retriever names slots `i` and `j`, retrieves their
+values into separate subspaces, and predicts the answer. Two models share the
+same architecture and task: the **law** model is trained where component `j`
+(the calibration) varies; the **shortcut** model is trained where `j` is
+effectively constant, so reading `i` alone predicts the answer — the everyday
+failure of a confounded or narrow training set (a cuffless-BP model fit on a
+cohort with similar arterial stiffness).
 
-| metric | law | shortcut |
-|--------|-----|----------|
-| validation MSE (`j`≈const) | ~0 | ~0 |
-| decodability probe R² for the ratio | ~1.0 | ~1.0 |
-| **interchange-intervention accuracy (the audit)** | **~0.99** | **~0.51** |
-| held-out MSE, revealed after the audit (`j` varies) | ~0 | ~0.015 |
-| `\|dy/dv_j\|` model vs. equation | 0.26 / 0.26 | 0.00 / 0.26 |
+On the validation distribution a practitioner actually has (`j` barely varies)
+the two are indistinguishable, and *this is the point* (blood-pressure law,
+`--quick`):
+
+| metric | law | shortcut | verdict |
+|--------|-----|----------|---------|
+| validation MSE (`j`≈const) | ~0 | ~0 | agree |
+| decodability probe R² for the answer | ~0.99 | ~0.99 | agree |
+| **interchange-intervention accuracy (audit)** | **~0.99** | **~0.25** | **separates** |
+| counterfactual `\|dBP/dE₀\|` vs. equation | 0.93 / 0.93 | 0.00 / 0.93 | **separates** |
+| held-out MSE, revealed after (`j` varies) | ~0 | ~0.17 | confirms |
 
 Predictive error and a linear probe cannot tell the models apart. Two
-post-hoc, label-free, frozen-model audits derived from the equation do:
+post-hoc, label-free, frozen-model audits derived from the equation do (the
+equation itself is the oracle, evaluated at known component values — no held-out
+measurement is used to reach the verdict):
 
 - **Counterfactual sensitivity** to component `j` — the equation requires
-  `dy/dv_j != 0`; the shortcut model is insensitive.
+  `dBP/dE₀ != 0`; the shortcut model is insensitive to the calibration term.
 - **Interchange-intervention accuracy** (a DAS-style alignment search): is there
   a subspace of the internal state that, swapped between two inputs, transfers
-  `y` as the equation predicts? A model that merely *encodes* the ratio fails;
-  one that *causally routes* through it passes.
+  the answer as the equation predicts? A model that merely *encodes* the answer
+  fails; one that *causally routes* through the law passes.
 
 The held-out `j`-varying error is revealed only afterward and confirms the
-audit's verdict — the audit substitutes for OOD labels the practitioner does
-not have. Outputs under `results/causal_mediation_toy/`:
-`metrics.json`, `causal_mediation.png`.
+audit's verdict — the audit stands in for the OOD labels the practitioner does
+not have. The six-panel figure (`results/causal_mediation_toy/<law>/`:
+`causal_mediation.png`, `metrics.json`) shows the task schematic, the
+indistinguishable in-distribution fit, the OOD failure, the calibration
+response curve, the interchange-accuracy vs. subspace-dimension curve, and a
+scorecard contrasting the conventional checks with the audits.
 
 Unit tests:
 

@@ -1,0 +1,32 @@
+{
+  "metrics": {
+    "law": {
+      "val_indist_mse": 0.0005160130094736814,
+      "ood_mse": 0.00043820435530506074,
+      "probe_r2_indist": 0.9921977519989014,
+      "model_abs_dy_dvj": 0.2363116443157196,
+      "equation_abs_dy_dvj": 0.2536512613296509,
+      "interchange_accuracy_peak": 0.988715223348718
+    },
+    "shortcut": {
+      "val_indist_mse": 2.5701338017825037e-05,
+      "ood_mse": 0.014533589594066143,
+      "probe_r2_indist": 0.9985752701759338,
+      "model_abs_dy_dvj": 0.0013167043216526508,
+      "equation_abs_dy_dvj": 0.2536512613296509,
+      "interchange_accuracy_peak": 0.5288928255828309
+    }
+  },
+  "config": {
+    "law": "saturation",
+    "output_dir": "results/causal_mediation_toy/saturation",
+    "device": "cpu",
+    "n_train": 1500,
+    "n_eval": 600,
+    "n_slots": 8,
+    "epochs": 500,
+    "width": 48,
+    "das_steps": 250,
+    "quick": true
+  }
+}
