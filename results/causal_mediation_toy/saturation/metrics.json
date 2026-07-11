@@ -78,6 +78,7 @@
     "width": 48,
     "das_steps": 250,
     "seeds": 3,
-    "quick": true
+    "quick": true,
+    "from_cache": false
   }
 }

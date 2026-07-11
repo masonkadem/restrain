@@ -57,16 +57,20 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
+from matplotlib.lines import Line2D
+from matplotlib.patches import FancyArrowPatch, Rectangle
 from sklearn.linear_model import Ridge
 from sklearn.metrics import r2_score
 from sklearn.preprocessing import StandardScaler
 from torch import nn
 
-LAW_COLOR = "#2a78d6"         # validated categorical slot 1 (blue)
-UNFAITHFUL_COLOR = "#4a3aa7"  # validated categorical slot 5 (violet)
-SHORTCUT_COLOR = "#eb6834"    # validated categorical slot 8 (orange)
-ORACLE_COLOR = "#52514e"      # secondary ink for the equation reference
+# Monochrome, print-safe theme: series are separated by shade + marker + line
+# style, not hue.
+INK = "#1a1a1a"
+SHADE = {"law": "#1a1a1a", "unfaithful": "#7b7b7b", "shortcut": "#b4b4b4"}
+MARKER = {"law": "o", "unfaithful": "s", "shortcut": "^"}
+DASH = {"law": (0, ()), "unfaithful": (0, (5, 2)), "shortcut": (0, (1, 1.6))}
+ORACLE_COLOR = "#1a1a1a"      # equation reference (thin)
 
 
 def set_seed(seed: int) -> None:
@@ -431,162 +435,191 @@ def _ms(values) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Figure
+# Figure  (monochrome, publication style)
 # --------------------------------------------------------------------------- #
-def _box(ax, x, y, w, h, text, fc, ec, fontsize=7.6):
-    ax.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.010,rounding_size=0.02",
-                                linewidth=1.3, facecolor=fc, edgecolor=ec))
-    ax.text(x + w / 2, y + h / 2, text, ha="center", va="center", fontsize=fontsize,
-            color="#0b0b0b")
+DESCRIPTIONS = {
+    "law": "j varies in training; uses both (true law)",
+    "unfaithful": "wrong-form law of j; uses j, wrong form",
+    "shortcut": "j fixed in training; ignores j",
+}
+
+
+def _rc():
+    plt.rcParams.update({
+        "font.family": "sans-serif",
+        "font.sans-serif": ["DejaVu Sans"],
+        "mathtext.fontset": "dejavuserif",
+        "font.size": 9.0,
+        "axes.linewidth": 0.8,
+        "axes.edgecolor": "#333333",
+        "axes.labelcolor": INK,
+        "axes.titlesize": 9.5,
+        "text.color": INK,
+        "xtick.color": "#333333", "ytick.color": "#333333",
+        "xtick.direction": "out", "ytick.direction": "out",
+        "xtick.major.width": 0.8, "ytick.major.width": 0.8,
+        "xtick.major.size": 3.0, "ytick.major.size": 3.0,
+        "xtick.labelsize": 8.0, "ytick.labelsize": 8.0,
+        "legend.fontsize": 7.6,
+        "axes.spines.top": False, "axes.spines.right": False,
+    })
+
+
+def _title(ax, letter, text):
+    ax.set_title(rf"$\bf{{{letter}}}$    {text}", loc="left", fontsize=9.4,
+                 color=INK, pad=8)
+
+
+def _rect(ax, x, y, w, h, text, fs=7.7):
+    ax.add_patch(Rectangle((x, y), w, h, facecolor="none", edgecolor=INK, linewidth=0.9))
+    ax.text(x + w / 2, y + h / 2, text, ha="center", va="center", fontsize=fs, color=INK)
 
 
 def _arrow(ax, x0, y0, x1, y1):
-    ax.add_patch(FancyArrowPatch((x0, y0), (x1, y1), arrowstyle="-|>", mutation_scale=12,
-                                 linewidth=1.3, color="#7a7a76", shrinkA=2, shrinkB=2))
+    ax.add_patch(FancyArrowPatch((x0, y0), (x1, y1), arrowstyle="-|>", mutation_scale=9,
+                                 linewidth=0.9, color="#555555", shrinkA=1, shrinkB=1))
 
 
-COLORS = {"law": LAW_COLOR, "unfaithful": UNFAITHFUL_COLOR, "shortcut": SHORTCUT_COLOR}
-DESCRIPTIONS = {
-    "law": "trained with j varying → uses both (true law)",
-    "unfaithful": "trained on wrong law of j → uses j, wrong form",
-    "shortcut": "trained with j fixed → ignores j",
-}
+def _proxy(ax, p, extra=None):
+    handles = []
+    if extra:
+        (lbl, kw) = extra
+        handles.append(Line2D([], [], label=lbl, **kw))
+    for r in p["regimes"]:
+        handles.append(Line2D([], [], color=SHADE[r], marker=MARKER[r], ls="none",
+                              ms=5, label=r))
+    return handles
 
 
 def panel_schematic(ax, p):
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis("off")
-    ax.set_title("A  Task: retrieve two components, apply the governing law",
-                 loc="left", fontsize=9.5, fontweight="bold")
-    _box(ax, 0.005, 0.66, 0.20, 0.16, "query names\nslots i, j", "#eef2f7", "#9aa7b4")
-    _box(ax, 0.27, 0.76, 0.34, 0.14, f"retrieve i:\n{p['i_name']}", "#dce9f9", LAW_COLOR)
-    _box(ax, 0.27, 0.58, 0.34, 0.14, f"retrieve j:\n{p['j_name']}", "#fce4d6", SHORTCUT_COLOR)
-    _box(ax, 0.65, 0.66, 0.34, 0.16, "governing law\n(both components)", "#eef2f7", "#9aa7b4")
-    _arrow(ax, 0.205, 0.75, 0.27, 0.82)
-    _arrow(ax, 0.205, 0.71, 0.27, 0.65)
-    _arrow(ax, 0.61, 0.83, 0.65, 0.76)
-    _arrow(ax, 0.61, 0.64, 0.65, 0.72)
-    ax.text(0.5, 0.50, p["equation"], ha="center", va="center", fontsize=8.6, color="#0b0b0b")
-    ax.text(0.01, 0.40, "three models, same architecture & task:", ha="left", va="top",
-            fontsize=8.2, color="#0b0b0b", fontweight="bold")
+    _title(ax, "A", "Task: retrieve two components, apply the governing law")
+    _rect(ax, 0.005, 0.68, 0.20, 0.12, "query names\nslots i, j", fs=7.0)
+    _rect(ax, 0.27, 0.765, 0.37, 0.115, f"retrieve i:\n{p['i_name']}", fs=6.7)
+    _rect(ax, 0.27, 0.605, 0.37, 0.115, f"retrieve j:\n{p['j_name']}", fs=6.7)
+    _rect(ax, 0.68, 0.68, 0.31, 0.12, "governing law\n(both components)", fs=7.0)
+    _arrow(ax, 0.21, 0.75, 0.27, 0.81)
+    _arrow(ax, 0.21, 0.71, 0.27, 0.66)
+    _arrow(ax, 0.64, 0.81, 0.68, 0.76)
+    _arrow(ax, 0.64, 0.66, 0.68, 0.72)
+    ax.text(0.5, 0.53, p["equation"], ha="center", va="center", fontsize=8.8, color=INK)
+    ax.text(0.01, 0.44, "Three models — same architecture and task:", ha="left", va="top",
+            fontsize=8.4, color=INK)
     for idx, r in enumerate(p["regimes"]):
-        y = 0.30 - idx * 0.11
-        ax.plot([0.03, 0.11], [y, y], color=COLORS[r], lw=3.2)
-        ax.text(0.13, y, f"{r} — {DESCRIPTIONS[r]}", va="center", fontsize=8.0,
-                color=COLORS[r], fontweight="bold")
+        y = 0.34 - idx * 0.105
+        ax.plot([0.03, 0.13], [y, y], color=SHADE[r], lw=1.6, ls=DASH[r])
+        ax.plot([0.08], [y], color=SHADE[r], marker=MARKER[r], ms=5)
+        ax.text(0.16, y, f"{r}:  {DESCRIPTIONS[r]}", va="center", fontsize=8.0, color=INK)
 
 
 def panel_scatter(ax, p, key, title, letter):
-    ax.set_title(f"{letter}  {title}", loc="left", fontsize=9.5, fontweight="bold")
+    _title(ax, letter, title)
     true = p["rep"][f"{key}_true"]
     unit = p["unit"]
     allv = list(true)
     for r in p["regimes"]:
         allv += p["rep"]["models"][r][f"{key}_pred"]
     lo, hi = min(allv), max(allv)
-    ax.plot([lo, hi], [lo, hi], "--", color=ORACLE_COLOR, lw=1.2, zorder=1)
+    ax.plot([lo, hi], [lo, hi], color="#999999", lw=1.0, zorder=1)
     for z, r in enumerate(reversed(p["regimes"])):
-        ax.scatter(true, p["rep"]["models"][r][f"{key}_pred"], s=8, color=COLORS[r],
-                   alpha=0.45, edgecolor="none", label=r, zorder=2 + z)
+        ax.scatter(true, p["rep"]["models"][r][f"{key}_pred"], s=7, color=SHADE[r],
+                   alpha=0.5, edgecolor="none", zorder=2 + z)
     ax.set_xlabel(f"true {unit}"); ax.set_ylabel(f"predicted {unit}")
-    ax.legend(loc="upper left", fontsize=7.5, frameon=False)
-    for s in ("top", "right"):
-        ax.spines[s].set_visible(False)
+    ax.legend(handles=_proxy(ax, p, ("identity", dict(color="#999999", lw=1.0))),
+              loc="upper left", frameon=False, handletextpad=0.5, labelspacing=0.3)
 
 
 def panel_sweep(ax, p):
-    ax.set_title("D  Counterfactual response to component j (input audit)",
-                 loc="left", fontsize=9.5, fontweight="bold")
-    x = p["vj_grid"]
-    ax.plot(x, p["rep"]["sweep_equation"], color=ORACLE_COLOR, lw=2.4, ls=(0, (4, 2)),
-            label="governing equation", zorder=5)
+    _title(ax, "D", "Counterfactual response to component j  (input audit)")
+    x = np.asarray(p["vj_grid"])
+    ax.plot(x, p["rep"]["sweep_equation"], color="#999999", lw=3.0, alpha=0.9,
+            solid_capstyle="round", zorder=1)
+    mk = max(1, len(x) // 9)
     for r in p["regimes"]:
-        ax.plot(x, p["rep"]["models"][r]["sweep_pred"], color=COLORS[r], lw=2, label=r)
+        ax.plot(x, p["rep"]["models"][r]["sweep_pred"], color=SHADE[r], lw=1.4,
+                ls=DASH[r], marker=MARKER[r], markevery=mk, ms=4, zorder=3)
     ax.set_xlabel(p["j_name"]); ax.set_ylabel(f"predicted {p['unit']}")
-    ax.legend(loc="best", fontsize=7.5, frameon=False)
-    for s in ("top", "right"):
-        ax.spines[s].set_visible(False)
+    ax.legend(handles=_proxy(ax, p, ("governing equation", dict(color="#999999", lw=3))),
+              loc="best", frameon=False, handletextpad=0.6, labelspacing=0.3)
 
 
 def panel_iia(ax, p):
-    ax.set_title("E  Interchange-intervention accuracy (representation audit)",
-                 loc="left", fontsize=9.5, fontweight="bold")
+    _title(ax, "E", "Interchange-intervention accuracy  (representation audit)")
     x = np.asarray(p["k_grid"], dtype=float)
     for r in p["regimes"]:
-        curves = np.asarray(p["per_seed"][r]["iia_curve"])   # (seeds, k)
+        curves = np.asarray(p["per_seed"][r]["iia_curve"])
         mean, std = curves.mean(0), curves.std(0)
-        ax.plot(x, mean, "-o", color=COLORS[r], lw=2, ms=5, label=r)
-        ax.fill_between(x, mean - std, mean + std, color=COLORS[r], alpha=0.15, lw=0)
-    ax.axhline(0.0, color=ORACLE_COLOR, ls=":", lw=1)
-    ax.text(x[0], 0.02, "chance", fontsize=6.8, color=ORACLE_COLOR, va="bottom")
+        ax.fill_between(x, mean - std, mean + std, color=SHADE[r], alpha=0.12, lw=0)
+        ax.plot(x, mean, color=SHADE[r], lw=1.5, ls=DASH[r], marker=MARKER[r], ms=5)
+    ax.axhline(0.0, color="#999999", ls=(0, (1, 2)), lw=0.9)
+    ax.text(x[0], 0.03, "chance", fontsize=7.0, color="#777777", va="bottom")
     ax.set_xscale("log", base=2)
     ax.set_xticks(x); ax.set_xticklabels([int(k) for k in x])
     lo = min(-0.15, min(np.asarray(p["per_seed"][r]["iia_curve"]).mean(0).min()
                         for r in p["regimes"]) - 0.1)
     ax.set_ylim(lo, 1.08)
-    ax.set_xlabel("interchanged subspace dim  k"); ax.set_ylabel("interchange accuracy (R²)")
-    ax.legend(loc="center right", fontsize=7.5, frameon=False)
-    for s in ("top", "right"):
-        ax.spines[s].set_visible(False)
+    ax.set_xlabel("interchanged subspace dimension  k")
+    ax.set_ylabel("interchange accuracy  (R²)")
+    ax.legend(handles=_proxy(ax, p), loc="center right", frameon=False,
+              handletextpad=0.5, labelspacing=0.3)
 
 
 def panel_scorecard(ax, p):
-    ax.set_title("F  Conventional checks agree; the audits separate",
-                 loc="left", fontsize=9.5, fontweight="bold")
+    _title(ax, "F", "Conventional checks agree; the audits separate")
     m = p["metrics"]
     ref = max(m["shortcut"]["ood_mse"]["mean"], 1e-6)
 
     def skill(d):
         return float(np.clip(1 - d["mean"] / ref, 0, 1)), float(d["std"] / ref)
-    # (row label, per-regime (mean, err), family)
-    rows = []
-    rows.append(("validation accuracy",
-                 {r: skill(m[r]["val_indist_mse"]) for r in p["regimes"]}, "conventional"))
-    rows.append(("probe decodes answer",
-                 {r: (m[r]["probe_r2_indist"]["mean"], m[r]["probe_r2_indist"]["std"])
-                  for r in p["regimes"]}, "conventional"))
-    rows.append(("uses component j? (gradient)",
-                 {r: (m[r]["uses_j_score"]["mean"], m[r]["uses_j_score"]["std"])
-                  for r in p["regimes"]}, "conventional"))
-    rows.append(("interchange audit",
-                 {r: (m[r]["interchange_accuracy_peak"]["mean"],
-                      m[r]["interchange_accuracy_peak"]["std"]) for r in p["regimes"]}, "audit"))
-    rows.append(("OOD accuracy (revealed)",
-                 {r: skill(m[r]["ood_mse"]) for r in p["regimes"]}, "audit"))
-
-    offsets = np.linspace(0.16, -0.16, len(p["regimes"]))
+    rows = [
+        ("validation accuracy",
+         {r: skill(m[r]["val_indist_mse"]) for r in p["regimes"]}),
+        ("probe decodes answer",
+         {r: (m[r]["probe_r2_indist"]["mean"], m[r]["probe_r2_indist"]["std"])
+          for r in p["regimes"]}),
+        ("uses component j?  (gradient)",
+         {r: (m[r]["uses_j_score"]["mean"], m[r]["uses_j_score"]["std"])
+          for r in p["regimes"]}),
+        ("interchange audit",
+         {r: (m[r]["interchange_accuracy_peak"]["mean"],
+              m[r]["interchange_accuracy_peak"]["std"]) for r in p["regimes"]}),
+        ("OOD accuracy (revealed)",
+         {r: skill(m[r]["ood_mse"]) for r in p["regimes"]}),
+    ]
+    offsets = np.linspace(0.17, -0.17, len(p["regimes"]))
     ys = np.arange(len(rows))[::-1]
-    for y, (lbl, vals, kind) in zip(ys, rows):
-        means = [vals[r][0] for r in p["regimes"]]
+    for i, (y, (lbl, vals)) in enumerate(zip(ys, rows)):
+        if i % 2 == 0:
+            ax.axhspan(y - 0.5, y + 0.5, color="#f5f5f4", zorder=0)
         for off, r in zip(offsets, p["regimes"]):
             mean, err = vals[r]
-            ax.errorbar(mean, y + off, xerr=err, fmt="o", ms=6.5, color=COLORS[r],
-                        ecolor=COLORS[r], elinewidth=1.2, capsize=2, zorder=3)
+            ax.errorbar(mean, y + off, xerr=err, fmt=MARKER[r], ms=5.5, color=SHADE[r],
+                        ecolor=SHADE[r], elinewidth=0.9, capsize=2, mfc=SHADE[r],
+                        mec=INK, mew=0.4, zorder=3)
         ax.text(-0.03, y, lbl, ha="right", va="center", fontsize=8.0)
-        # a check "separates" only if it ranks the trustworthy (law) model clearly
-        # above BOTH untrustworthy models.
         others = [vals[r][0] for r in p["regimes"] if r != "law"]
         sep = (vals["law"][0] - max(others)) > 0.3 if others else False
         ax.text(1.04, y, "isolates law" if sep else "misses unfaithful", ha="left",
-                va="center", fontsize=7.2, fontweight="bold" if sep else "normal",
-                color="#0b0b0b" if sep else "#a08a3a")
-        ax.axhline(y - 0.5, color="#eeeeec", lw=0.8, zorder=0)
+                va="center", fontsize=7.2, style="italic" if sep else "normal",
+                color=INK if sep else "#8a8a86")
     ax.set_xlim(-0.03, 1.05); ax.set_ylim(-0.6, len(rows) - 0.4)
     ax.set_yticks([])
     ax.set_xlabel("normalized score  (0 = worst, 1 = best)")
-    handles = [ax.scatter([], [], s=55, color=COLORS[r], label=r) for r in p["regimes"]]
-    ax.legend(handles=handles, loc="lower center", ncol=len(p["regimes"]), fontsize=7.5,
-              frameon=False, bbox_to_anchor=(0.5, -0.34))
-    for s in ("top", "right", "left"):
-        ax.spines[s].set_visible(False)
+    ax.spines["left"].set_visible(False)
+    ax.legend(handles=_proxy(ax, p), loc="lower center", ncol=len(p["regimes"]),
+              frameon=False, bbox_to_anchor=(0.5, -0.35), handletextpad=0.4,
+              columnspacing=1.2)
 
 
 def make_figure(p, path):
-    fig, axes = plt.subplots(2, 3, figsize=(15, 8.4))
+    _rc()
+    fig, axes = plt.subplots(2, 3, figsize=(14.5, 8.4))
     law_name = "blood pressure (Moens–Korteweg)" if p["law"] == "blood_pressure" else p["law"]
-    fig.suptitle(
-        f"Auditing whether a model causally uses the governing law — {law_name}"
-        f"   ({p['seeds']} seeds, mean ± s.d.)",
-        fontsize=12.5, fontweight="bold", x=0.02, ha="left")
+    fig.text(0.008, 0.975,
+             f"Auditing whether a model causally uses the governing law: {law_name}",
+             fontsize=12, fontweight="bold", ha="left", va="top", color=INK)
+    fig.text(0.008, 0.945, f"{p['seeds']} seeds; points are mean, bars are s.d.",
+             fontsize=8.6, ha="left", va="top", color="#555555")
     panel_schematic(axes[0, 0], p)
     panel_scatter(axes[0, 1], p, "val",
                   "Validation (j ≈ fixed): all models look identical", "B")
@@ -595,7 +628,7 @@ def make_figure(p, path):
     panel_sweep(axes[1, 0], p)
     panel_iia(axes[1, 1], p)
     panel_scorecard(axes[1, 2], p)
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
     fig.savefig(path, dpi=170, bbox_inches="tight")
     plt.close(fig)
 
@@ -613,6 +646,8 @@ def main():
     parser.add_argument("--das-steps", type=int, default=400)
     parser.add_argument("--seeds", type=int, default=5)
     parser.add_argument("--quick", action="store_true")
+    parser.add_argument("--from-cache", action="store_true",
+                        help="skip training; re-render the figure from payload.json")
     args = parser.parse_args()
     if args.quick:
         (args.n_train, args.n_eval, args.epochs,
@@ -620,8 +655,14 @@ def main():
     if args.output_dir is None:
         args.output_dir = Path(f"results/causal_mediation_toy/{args.law}")
 
-    payload = run(args)
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    if args.from_cache:
+        with open(args.output_dir / "payload.json", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    else:
+        payload = run(args)
+        with open(args.output_dir / "payload.json", "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
     with open(args.output_dir / "metrics.json", "w", encoding="utf-8") as handle:
         json.dump({"metrics": payload["metrics"], "config": payload["config"]}, handle, indent=2)
     make_figure(payload, args.output_dir / "causal_mediation.png")
