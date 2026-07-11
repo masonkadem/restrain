@@ -126,6 +126,14 @@ Outputs under `results/physics_credibility/causal_bp/`:
 - `causal_bp_accuracy_gap.png`: in-distribution accuracy stays flat while OOD
   error climbs as the shortcut takes over.
 
+For a single self-contained graphical abstract — the data-generating process,
+the model and intervention drawings, pseudo-code, and the embedded results —
+regenerate `causal_bp_overview.png`:
+
+```bash
+python analysis/causal_bp_overview.py   # reads causal_bp_summary.json
+```
+
 ### Success rule
 
 - Random-direction interventions are a null (near-zero fidelity)
