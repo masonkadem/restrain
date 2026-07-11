@@ -1,0 +1,146 @@
+{
+  "claim": "A model is trustworthy for BP = a * PTT only if intervening on its internal PTT representation shifts its BP output by the physical slope a.  Causal fidelity, computed without test labels, predicts out-of-distribution failure that in-distribution accuracy hides.",
+  "governing_law": "BP = a * PTT + b;  a = -0.300 mmHg/ms",
+  "limitations": [
+    "Synthetic two-stream pulse simulator; not clinical waveforms.",
+    "Confound is a controlled amplitude shortcut, not all real spurious cues.",
+    "Causal fidelity uses a linear PTT subspace; nonlinear mediation is out of scope.",
+    "Do not use for clinical decision-making."
+  ],
+  "report": {
+    "config": {
+      "n_train": 320,
+      "n_eval": 200,
+      "n_ood": 200,
+      "epochs": 200,
+      "batch_size": 64,
+      "width": 64,
+      "a": -0.3,
+      "confound_corrs": [
+        0.0,
+        0.5,
+        0.8,
+        0.95,
+        0.99
+      ],
+      "seeds": [
+        0,
+        1
+      ]
+    },
+    "records": [
+      {
+        "confound_corr": 0.0,
+        "seed": 0,
+        "in_distribution_mae": 6.193607330322266,
+        "ood_mae": 6.5045881271362305,
+        "ptt_causal_slope": -0.12708179652690887,
+        "ptt_causal_fidelity": 0.4236059884230296,
+        "confound_causal_slope": 1.6312175989151,
+        "random_direction_slope": -0.0202652458101511
+      },
+      {
+        "confound_corr": 0.0,
+        "seed": 1,
+        "in_distribution_mae": 6.228906154632568,
+        "ood_mae": 5.947807788848877,
+        "ptt_causal_slope": -0.20112141966819763,
+        "ptt_causal_fidelity": 0.6704047322273254,
+        "confound_causal_slope": 1.350823998451233,
+        "random_direction_slope": 0.011452755890786648
+      },
+      {
+        "confound_corr": 0.5,
+        "seed": 0,
+        "in_distribution_mae": 4.242736339569092,
+        "ood_mae": 5.435283184051514,
+        "ptt_causal_slope": -0.11680015921592712,
+        "ptt_causal_fidelity": 0.38933386405309045,
+        "confound_causal_slope": -0.7004165053367615,
+        "random_direction_slope": 0.019704513251781464
+      },
+      {
+        "confound_corr": 0.5,
+        "seed": 1,
+        "in_distribution_mae": 7.88555908203125,
+        "ood_mae": 9.756731986999512,
+        "ptt_causal_slope": -0.11587169021368027,
+        "ptt_causal_fidelity": 0.38623896737893426,
+        "confound_causal_slope": -6.419100284576416,
+        "random_direction_slope": -0.03606739640235901
+      },
+      {
+        "confound_corr": 0.8,
+        "seed": 0,
+        "in_distribution_mae": 2.381256580352783,
+        "ood_mae": 5.781487464904785,
+        "ptt_causal_slope": -0.17950677871704102,
+        "ptt_causal_fidelity": 0.5983559290568035,
+        "confound_causal_slope": 0.16435760259628296,
+        "random_direction_slope": 0.02690974622964859
+      },
+      {
+        "confound_corr": 0.8,
+        "seed": 1,
+        "in_distribution_mae": 2.249152660369873,
+        "ood_mae": 5.8910932540893555,
+        "ptt_causal_slope": -0.13270223140716553,
+        "ptt_causal_fidelity": 0.44234077135721844,
+        "confound_causal_slope": -0.5771007537841797,
+        "random_direction_slope": 0.02244013361632824
+      },
+      {
+        "confound_corr": 0.95,
+        "seed": 0,
+        "in_distribution_mae": 2.296290636062622,
+        "ood_mae": 6.468590259552002,
+        "ptt_causal_slope": -0.21219344437122345,
+        "ptt_causal_fidelity": 0.7073114812374115,
+        "confound_causal_slope": -3.1794703006744385,
+        "random_direction_slope": -0.03910968452692032
+      },
+      {
+        "confound_corr": 0.95,
+        "seed": 1,
+        "in_distribution_mae": 1.925023078918457,
+        "ood_mae": 6.95875358581543,
+        "ptt_causal_slope": -0.18357712030410767,
+        "ptt_causal_fidelity": 0.6119237343470256,
+        "confound_causal_slope": -3.031623125076294,
+        "random_direction_slope": -0.0012264966499060392
+      },
+      {
+        "confound_corr": 0.99,
+        "seed": 0,
+        "in_distribution_mae": 2.2988545894622803,
+        "ood_mae": 10.674381256103516,
+        "ptt_causal_slope": -0.038805074989795685,
+        "ptt_causal_fidelity": 0.12935024996598563,
+        "confound_causal_slope": -1.703220248222351,
+        "random_direction_slope": 0.00626794807612896
+      },
+      {
+        "confound_corr": 0.99,
+        "seed": 1,
+        "in_distribution_mae": 2.6599280834198,
+        "ood_mae": 10.506792068481445,
+        "ptt_causal_slope": -0.006735310424119234,
+        "ptt_causal_fidelity": 0.022451034747064114,
+        "confound_causal_slope": -0.9463135600090027,
+        "random_direction_slope": 0.0028379345312714577
+      }
+    ],
+    "decision": {
+      "fidelity_vs_ood_pearson": -0.7734386397763513,
+      "confound_vs_ood_pearson": 0.3820041985921653,
+      "confound_vs_id_pearson": -0.8181456368333921,
+      "mean_in_distribution_mae": 3.836131453514099,
+      "mean_ood_mae": 7.392550897598267,
+      "mean_random_direction_fidelity": 0.002351930597797036,
+      "fidelity_predicts_ood_failure": true,
+      "shortcut_reliance_raises_ood": true,
+      "in_distribution_accuracy_hides_failure": true,
+      "random_direction_is_null": true
+    }
+  }
+}
