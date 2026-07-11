@@ -1,32 +1,83 @@
 {
   "metrics": {
     "law": {
-      "val_indist_mse": 0.00021235649182926863,
-      "ood_mse": 0.00022135629842523485,
-      "probe_r2_indist": 0.99717777967453,
-      "model_abs_dy_dvj": 0.9259802103042603,
-      "equation_abs_dy_dvj": 0.9265393018722534,
-      "interchange_accuracy_peak": 0.9989069062591213
+      "val_indist_mse": {
+        "mean": 4.227941341620559e-05,
+        "std": 2.981521636467357e-05
+      },
+      "ood_mse": {
+        "mean": 4.109052558002683e-05,
+        "std": 2.862884124758371e-05
+      },
+      "probe_r2_indist": {
+        "mean": 0.9971372286478678,
+        "std": 0.0008055508773570794
+      },
+      "uses_j_score": {
+        "mean": 0.9972022150879595,
+        "std": 0.003956665367210526
+      },
+      "interchange_accuracy_peak": {
+        "mean": 0.999347433402507,
+        "std": 0.0003191057632066482
+      }
+    },
+    "unfaithful": {
+      "val_indist_mse": {
+        "mean": 0.01194239768665284,
+        "std": 0.01468810293630031
+      },
+      "ood_mse": {
+        "mean": 0.6970001856486002,
+        "std": 0.029991782244212634
+      },
+      "probe_r2_indist": {
+        "mean": 0.8742948770523071,
+        "std": 0.1749901633397383
+      },
+      "uses_j_score": {
+        "mean": 0.9956291068596458,
+        "std": 0.00325476440027968
+      },
+      "interchange_accuracy_peak": {
+        "mean": -0.5554592954068469,
+        "std": 0.20813221645134838
+      }
     },
     "shortcut": {
-      "val_indist_mse": 0.0004558578657452017,
-      "ood_mse": 0.1738118678331375,
-      "probe_r2_indist": 0.9912278056144714,
-      "model_abs_dy_dvj": 8.377723133889958e-05,
-      "equation_abs_dy_dvj": 0.9265393018722534,
-      "interchange_accuracy_peak": 0.25136914250333786
+      "val_indist_mse": {
+        "mean": 0.0012839865230489522,
+        "std": 0.001217235645178258
+      },
+      "ood_mse": {
+        "mean": 0.17187492549419403,
+        "std": 0.008032216838139535
+      },
+      "probe_r2_indist": {
+        "mean": 0.9116177558898926,
+        "std": 0.11220489194563742
+      },
+      "uses_j_score": {
+        "mean": 0.00837106774030427,
+        "std": 0.0108075537131627
+      },
+      "interchange_accuracy_peak": {
+        "mean": 0.1828109717898291,
+        "std": 0.03235542999920813
+      }
     }
   },
   "config": {
     "law": "blood_pressure",
     "output_dir": "results/causal_mediation_toy/blood_pressure",
     "device": "cpu",
-    "n_train": 1500,
+    "n_train": 2000,
     "n_eval": 600,
     "n_slots": 8,
-    "epochs": 500,
+    "epochs": 600,
     "width": 48,
     "das_steps": 250,
+    "seeds": 3,
     "quick": true
   }
 }

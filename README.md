@@ -114,37 +114,46 @@ effectively constant, so reading `i` alone predicts the answer — the everyday
 failure of a confounded or narrow training set (a cuffless-BP model fit on a
 cohort with similar arterial stiffness).
 
-On the validation distribution a practitioner actually has (`j` barely varies)
-the two are indistinguishable, and *this is the point* (blood-pressure law,
-`--quick`):
+**Three models** share the architecture and task (see the table below). On the
+validation distribution a practitioner actually has (`j` barely varies) all three
+are indistinguishable — and *this is the point* (blood-pressure law, `--quick`,
+3 seeds, mean):
 
-| metric | law | shortcut | verdict |
-|--------|-----|----------|---------|
-| validation MSE (`j`≈const) | ~0 | ~0 | agree |
-| decodability probe R² for the answer | ~0.99 | ~0.99 | agree |
-| **interchange-intervention accuracy (audit)** | **~0.99** | **~0.25** | **separates** |
-| counterfactual `\|dBP/dE₀\|` vs. equation | 0.93 / 0.93 | 0.00 / 0.93 | **separates** |
-| held-out MSE, revealed after (`j` varies) | ~0 | ~0.17 | confirms |
+| check | law | unfaithful | shortcut | separates law? |
+|-------|-----|-----------|----------|----------------|
+| validation MSE (`j`≈const) | ~0 | ~0 | ~0 | no |
+| decodability probe R² | ~0.99 | ~0.9 | ~0.9 | no |
+| uses `j`? gradient magnitude `[0-1]` | ~1.0 | ~1.0 | ~0.0 | **no** (misses unfaithful) |
+| **interchange-intervention accuracy** | **~0.99** | **~−0.55** | **~0.18** | **yes** |
+| OOD MSE, revealed after (`j` varies) | ~0 | ~0.70 | ~0.17 | **yes** |
 
-Predictive error and a linear probe cannot tell the models apart. Two
-post-hoc, label-free, frozen-model audits derived from the equation do (the
-equation itself is the oracle, evaluated at known component values — no held-out
-measurement is used to reach the verdict):
+- **law** — trained with `j` varying → uses both components (true law).
+- **unfaithful** — trained on a *wrong-form* law of `j` (for BP, the calibration
+  term with the wrong sign) → it *does* use `j` (nonzero, correct-magnitude
+  gradient) but implements the wrong equation.
+- **shortcut** — trained with `j` fixed → ignores `j`.
 
-- **Counterfactual sensitivity** to component `j` — the equation requires
-  `dBP/dE₀ != 0`; the shortcut model is insensitive to the calibration term.
-- **Interchange-intervention accuracy** (a DAS-style alignment search): is there
-  a subspace of the internal state that, swapped between two inputs, transfers
-  the answer as the equation predicts? A model that merely *encodes* the answer
-  fails; one that *causally routes* through the law passes.
+Predictive error, a decodability probe, and even a gradient-*magnitude*
+sensitivity check all fail to separate the faithful model from the unfaithful
+one. Only the **interchange-intervention audit** (a DAS-style alignment search:
+is there a subspace of the internal state that, swapped between two inputs,
+transfers the answer as the equation predicts?) isolates the law model — and the
+held-out `j`-varying error, revealed only afterward, confirms it. The equation
+is the oracle (evaluated at known component values); no measured OOD label is
+used to reach the verdict.
 
-The held-out `j`-varying error is revealed only afterward and confirms the
-audit's verdict — the audit stands in for the OOD labels the practitioner does
-not have. The six-panel figure (`results/causal_mediation_toy/<law>/`:
-`causal_mediation.png`, `metrics.json`) shows the task schematic, the
-indistinguishable in-distribution fit, the OOD failure, the calibration
-response curve, the interchange-accuracy vs. subspace-dimension curve, and a
-scorecard contrasting the conventional checks with the audits.
+Outputs under `results/causal_mediation_toy/<law>/`:
+
+- `causal_mediation.png` — six panels: task schematic, indistinguishable
+  in-distribution fit, OOD reveal, counterfactual response curve, interchange
+  accuracy vs. subspace dimension (with seed error bars), and a scorecard
+  showing the conventional checks agreeing while the audits separate.
+- `metrics.json` — per-metric mean ± s.d. over seeds.
+- `../audit_map.png` (from `python analysis/audit_map.py`) — precise diagram of
+  the forward computation and exactly where each audit reads (`h`) or intervenes.
+
+Precise formulation of the task, architecture, models, and each audit:
+`analysis/CAUSAL_AUDIT_MATH.md`.
 
 Unit tests:
 

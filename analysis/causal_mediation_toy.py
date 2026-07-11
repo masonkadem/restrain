@@ -63,9 +63,10 @@ from sklearn.metrics import r2_score
 from sklearn.preprocessing import StandardScaler
 from torch import nn
 
-LAW_COLOR = "#2a78d6"       # validated categorical slot 1 (blue)
-SHORTCUT_COLOR = "#eb6834"  # validated categorical slot 8 (orange)
-ORACLE_COLOR = "#52514e"    # secondary ink for the equation reference
+LAW_COLOR = "#2a78d6"         # validated categorical slot 1 (blue)
+UNFAITHFUL_COLOR = "#4a3aa7"  # validated categorical slot 5 (violet)
+SHORTCUT_COLOR = "#eb6834"    # validated categorical slot 8 (orange)
+ORACLE_COLOR = "#52514e"      # secondary ink for the equation reference
 
 
 def set_seed(seed: int) -> None:
@@ -98,6 +99,10 @@ class Law:
     i_name: str
     j_name: str
     equation: str
+    # Wrong-functional-form target for the "unfaithful" model: agrees with the true
+    # law on the practitioner's validation distribution (j ~ j_const) but diverges
+    # away from it.  Uses component j (nonzero sensitivity) but not via the true law.
+    surrogate_label: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None
 
     @property
     def value_scale(self) -> tuple[float, float]:
@@ -120,6 +125,9 @@ def saturation_law() -> Law:
         i_name="component i (v_i)",
         j_name="component j (v_j)",
         equation=r"$y = v_i / (v_i + v_j)$",
+        # wrong-sign response to v_j: matches the true law at v_j = 1 and has the
+        # same |slope|, but moves the opposite way off-distribution.
+        surrogate_label=lambda vi, vj: vi / (vi + 1.0) + vi / (vi + 1.0) ** 2 * (vj - 1.0),
     )
 
 
@@ -141,6 +149,10 @@ def blood_pressure_law() -> Law:
         i_name="pulse transit time (PTT)",
         j_name="calibration / stiffness (E0)",
         equation=r"$BP = P_0 + S\,[\,2\ln(L/PTT) - \ln(E_0/E_{ref})\,]$",
+        # wrong-sign calibration: +ln(E0) instead of -ln(E0).  Equals the true law
+        # at E0 = E_ref and has the same |dBP/dE0| (so a gradient-magnitude check is
+        # fooled), but the calibration correction runs the wrong way off-distribution.
+        surrogate_label=lambda ptt, e0: 2.0 * np.log(L_ref / ptt) + np.log(e0 / E_ref),
     )
 
 
@@ -157,11 +169,11 @@ class Batch:
     y: torch.Tensor
 
 
-def _assemble(values, i_idx, j_idx, pos, law) -> Batch:
+def _assemble(values, i_idx, j_idx, pos, law, label_fn=None) -> Batch:
     n, n_slots = values.shape
     v_i = values[np.arange(n), i_idx]
     v_j = values[np.arange(n), j_idx]
-    y = law.label(v_i, v_j).astype(np.float32)
+    y = (label_fn or law.label)(v_i, v_j).astype(np.float32)
     center, half = law.value_scale
     scaled = ((values - center) / half)[..., None]
     source = np.concatenate([pos[i_idx], pos[j_idx]], axis=-1).astype(np.float32)
@@ -178,7 +190,8 @@ def _assemble(values, i_idx, j_idx, pos, law) -> Batch:
     )
 
 
-def generate(law: Law, n: int, n_slots: int, pos_dim: int, vary_j: bool, seed: int) -> Batch:
+def generate(law: Law, n: int, n_slots: int, pos_dim: int, vary_j: bool, seed: int,
+             use_surrogate: bool = False) -> Batch:
     rng = np.random.default_rng(seed)
     pos = positional_encoding(n_slots, pos_dim)
     lo = min(law.vi_range[0], law.vj_range[0])
@@ -192,7 +205,8 @@ def generate(law: Law, n: int, n_slots: int, pos_dim: int, vary_j: bool, seed: i
     else:
         jitter = rng.normal(scale=0.02, size=n).astype(np.float32)
         values[np.arange(n), j_idx] = np.clip(law.j_const + jitter, *law.vj_range)
-    return _assemble(values, i_idx, j_idx, pos, law)
+    label_fn = law.surrogate_label if use_surrogate else None
+    return _assemble(values, i_idx, j_idx, pos, law, label_fn)
 
 
 def sweep_batch(law: Law, vi_fixed: float, vj_values: np.ndarray, n_slots: int,
@@ -240,7 +254,8 @@ class Retriever(nn.Module):
 
 def train(model, data, epochs, device, batch_size=256):
     model.to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=2e-3)
+    opt = torch.optim.Adam(model.parameters(), lr=3e-3)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs)
     src, tgt, y = data.source.to(device), data.targets.to(device), data.y.to(device)
     n = len(y)
     loss = torch.tensor(0.0)
@@ -252,6 +267,7 @@ def train(model, data, epochs, device, batch_size=256):
             loss = torch.mean((model(src[idx], tgt[idx]) - y[idx]) ** 2)
             loss.backward()
             opt.step()
+        sched.step()
     return float(loss.item())
 
 
@@ -334,54 +350,74 @@ def interchange_accuracy(model, data, device, k, steps):
 # --------------------------------------------------------------------------- #
 # Experiment
 # --------------------------------------------------------------------------- #
+# Model regimes: (train vary_j, train-on-surrogate-label)
+REGIMES = {
+    "law": dict(vary_j=True, use_surrogate=False),        # uses both, true law
+    "unfaithful": dict(vary_j=True, use_surrogate=True),   # uses j, wrong law
+    "shortcut": dict(vary_j=False, use_surrogate=False),   # ignores j
+}
+
+
 def run(args) -> dict:
     device = torch.device(args.device)
     law = LAWS[args.law]()
     pos_dim = 8
     source_dim, target_dim = 2 * pos_dim, 1 + pos_dim
     ns = args.n_slots
-
-    law_train = generate(law, args.n_train, ns, pos_dim, vary_j=True, seed=1)
-    shortcut_train = generate(law, args.n_train, ns, pos_dim, vary_j=False, seed=1)
-    val_indist = generate(law, args.n_eval, ns, pos_dim, vary_j=False, seed=2)
-    audit = generate(law, args.n_eval, ns, pos_dim, vary_j=True, seed=3)
-    ood = generate(law, args.n_eval, ns, pos_dim, vary_j=True, seed=4)
+    regimes = list(REGIMES) if law.surrogate_label is not None else ["law", "shortcut"]
+    k_grid = [k for k in (1, 4, 16, 32) if k <= 2 * args.width]
 
     vi_mid = float(np.mean(law.vi_range))
     vj_grid = np.linspace(law.vj_range[0], law.vj_range[1], 40)
-    sweep = sweep_batch(law, vi_mid, vj_grid, ns, pos_dim, seed=7)
-    k_grid = [k for k in (1, 2, 4, 8, 16, 32) if k <= 2 * args.width]
-
     payload = {
         "law": law.name, "equation": law.equation, "unit": law.display_unit,
-        "i_name": law.i_name, "j_name": law.j_name,
-        "vj_grid": vj_grid.tolist(), "k_grid": k_grid,
-        "sweep_equation": law.to_display(sweep.y.numpy()).tolist(),
-        "val_true": law.to_display(val_indist.y.numpy()).tolist(),
-        "ood_true": law.to_display(ood.y.numpy()).tolist(),
-        "models": {},
+        "i_name": law.i_name, "j_name": law.j_name, "regimes": regimes,
+        "vj_grid": vj_grid.tolist(), "k_grid": k_grid, "seeds": args.seeds,
+        "per_seed": {r: {"val_mse": [], "ood_mse": [], "probe_r2": [], "uses_j": [],
+                         "iia_curve": []} for r in regimes},
+        "rep": {},   # representative-seed arrays for the scatter / sweep panels
     }
+    for si, seed in enumerate(range(args.seeds)):
+        val_indist = generate(law, args.n_eval, ns, pos_dim, False, seed=1000 + seed)
+        audit = generate(law, args.n_eval, ns, pos_dim, True, seed=2000 + seed)
+        ood = generate(law, args.n_eval, ns, pos_dim, True, seed=3000 + seed)
+        sweep = sweep_batch(law, vi_mid, vj_grid, ns, pos_dim, seed=4000 + seed)
+        if si == 0:
+            payload["rep"] = {"val_true": law.to_display(val_indist.y.numpy()).tolist(),
+                              "ood_true": law.to_display(ood.y.numpy()).tolist(),
+                              "sweep_equation": law.to_display(sweep.y.numpy()).tolist(),
+                              "models": {}}
+        for r in regimes:
+            train_data = generate(law, args.n_train, ns, pos_dim, seed=seed,
+                                  **REGIMES[r])
+            set_seed(seed)
+            model = Retriever(source_dim, target_dim, args.width)
+            train(model, train_data, args.epochs, device)
+            m_dydvj, eq_dydvj = sensitivity(model, audit, law, device)
+            iia_curve = [interchange_accuracy(model, audit, device, k, args.das_steps)
+                         for k in k_grid]
+            ps = payload["per_seed"][r]
+            ps["val_mse"].append(mse(model, val_indist, device))
+            ps["ood_mse"].append(mse(model, ood, device))
+            ps["probe_r2"].append(probe_r2(model, val_indist, val_indist, device))
+            ps["uses_j"].append(float(min(m_dydvj / max(eq_dydvj, 1e-8), 1.0)))
+            ps["iia_curve"].append(iia_curve)
+            if si == 0:
+                payload["rep"]["models"][r] = {
+                    "val_pred": law.to_display(predict(model, val_indist, device)).tolist(),
+                    "ood_pred": law.to_display(predict(model, ood, device)).tolist(),
+                    "sweep_pred": law.to_display(predict(model, sweep, device)).tolist(),
+                }
+
+    # aggregate scalar metrics (mean / std across seeds)
     metrics = {}
-    for name, train_data in (("law", law_train), ("shortcut", shortcut_train)):
-        set_seed(0)
-        model = Retriever(source_dim, target_dim, args.width)
-        train(model, train_data, args.epochs, device)
-        model_dydvj, eq_dydvj = sensitivity(model, audit, law, device)
-        iia_curve = [interchange_accuracy(model, audit, device, k, args.das_steps)
-                     for k in k_grid]
-        payload["models"][name] = {
-            "val_pred": law.to_display(predict(model, val_indist, device)).tolist(),
-            "ood_pred": law.to_display(predict(model, ood, device)).tolist(),
-            "sweep_pred": law.to_display(predict(model, sweep, device)).tolist(),
-            "iia_curve": iia_curve,
-        }
-        metrics[name] = {
-            "val_indist_mse": mse(model, val_indist, device),
-            "ood_mse": mse(model, ood, device),
-            "probe_r2_indist": probe_r2(model, val_indist, val_indist, device),
-            "model_abs_dy_dvj": model_dydvj,
-            "equation_abs_dy_dvj": eq_dydvj,
-            "interchange_accuracy_peak": float(max(iia_curve)),
+    for r in regimes:
+        ps = payload["per_seed"][r]
+        iia_peak = np.max(np.asarray(ps["iia_curve"]), axis=1)  # per-seed peak over k
+        metrics[r] = {
+            "val_indist_mse": _ms(ps["val_mse"]), "ood_mse": _ms(ps["ood_mse"]),
+            "probe_r2_indist": _ms(ps["probe_r2"]), "uses_j_score": _ms(ps["uses_j"]),
+            "interchange_accuracy_peak": _ms(iia_peak),
         }
     payload["metrics"] = metrics
     payload["config"] = {k: (str(v) if isinstance(v, Path) else v)
@@ -389,13 +425,19 @@ def run(args) -> dict:
     return payload
 
 
+def _ms(values) -> dict:
+    arr = np.asarray(values, dtype=float)
+    return {"mean": float(arr.mean()), "std": float(arr.std())}
+
+
 # --------------------------------------------------------------------------- #
 # Figure
 # --------------------------------------------------------------------------- #
-def _box(ax, x, y, w, h, text, fc, ec):
-    ax.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.012,rounding_size=0.02",
+def _box(ax, x, y, w, h, text, fc, ec, fontsize=7.6):
+    ax.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.010,rounding_size=0.02",
                                 linewidth=1.3, facecolor=fc, edgecolor=ec))
-    ax.text(x + w / 2, y + h / 2, text, ha="center", va="center", fontsize=8.4, color="#0b0b0b")
+    ax.text(x + w / 2, y + h / 2, text, ha="center", va="center", fontsize=fontsize,
+            color="#0b0b0b")
 
 
 def _arrow(ax, x0, y0, x1, y1):
@@ -403,39 +445,48 @@ def _arrow(ax, x0, y0, x1, y1):
                                  linewidth=1.3, color="#7a7a76", shrinkA=2, shrinkB=2))
 
 
+COLORS = {"law": LAW_COLOR, "unfaithful": UNFAITHFUL_COLOR, "shortcut": SHORTCUT_COLOR}
+DESCRIPTIONS = {
+    "law": "trained with j varying → uses both (true law)",
+    "unfaithful": "trained on wrong law of j → uses j, wrong form",
+    "shortcut": "trained with j fixed → ignores j",
+}
+
+
 def panel_schematic(ax, p):
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis("off")
     ax.set_title("A  Task: retrieve two components, apply the governing law",
                  loc="left", fontsize=9.5, fontweight="bold")
-    _box(ax, 0.01, 0.62, 0.22, 0.18, "query names\nslots i, j", "#eef2f7", "#9aa7b4")
-    _box(ax, 0.29, 0.74, 0.30, 0.16, f"retrieve i:\n{p['i_name']}", "#dce9f9", LAW_COLOR)
-    _box(ax, 0.29, 0.53, 0.30, 0.16, f"retrieve j:\n{p['j_name']}", "#fce4d6", SHORTCUT_COLOR)
-    _box(ax, 0.66, 0.62, 0.32, 0.18, "governing law\n(both components)", "#eef2f7", "#9aa7b4")
-    _arrow(ax, 0.23, 0.73, 0.29, 0.80)
-    _arrow(ax, 0.23, 0.69, 0.29, 0.61)
-    _arrow(ax, 0.59, 0.81, 0.66, 0.74)
-    _arrow(ax, 0.59, 0.60, 0.66, 0.68)
-    ax.text(0.5, 0.45, p["equation"], ha="center", va="center", fontsize=8.6, color="#0b0b0b")
-    ax.text(0.01, 0.33,
-            "law model — trained with component j varying  → must use both\n"
-            "shortcut model — trained with component j fixed → reads i alone",
-            ha="left", va="top", fontsize=8.2, color="#52514e")
-    ax.plot([0.03, 0.12], [0.14, 0.14], color=LAW_COLOR, lw=3)
-    ax.text(0.14, 0.14, "law", va="center", fontsize=8.4, color=LAW_COLOR, fontweight="bold")
-    ax.plot([0.30, 0.39], [0.14, 0.14], color=SHORTCUT_COLOR, lw=3)
-    ax.text(0.41, 0.14, "shortcut", va="center", fontsize=8.4, color=SHORTCUT_COLOR,
-            fontweight="bold")
+    _box(ax, 0.005, 0.66, 0.20, 0.16, "query names\nslots i, j", "#eef2f7", "#9aa7b4")
+    _box(ax, 0.27, 0.76, 0.34, 0.14, f"retrieve i:\n{p['i_name']}", "#dce9f9", LAW_COLOR)
+    _box(ax, 0.27, 0.58, 0.34, 0.14, f"retrieve j:\n{p['j_name']}", "#fce4d6", SHORTCUT_COLOR)
+    _box(ax, 0.65, 0.66, 0.34, 0.16, "governing law\n(both components)", "#eef2f7", "#9aa7b4")
+    _arrow(ax, 0.205, 0.75, 0.27, 0.82)
+    _arrow(ax, 0.205, 0.71, 0.27, 0.65)
+    _arrow(ax, 0.61, 0.83, 0.65, 0.76)
+    _arrow(ax, 0.61, 0.64, 0.65, 0.72)
+    ax.text(0.5, 0.50, p["equation"], ha="center", va="center", fontsize=8.6, color="#0b0b0b")
+    ax.text(0.01, 0.40, "three models, same architecture & task:", ha="left", va="top",
+            fontsize=8.2, color="#0b0b0b", fontweight="bold")
+    for idx, r in enumerate(p["regimes"]):
+        y = 0.30 - idx * 0.11
+        ax.plot([0.03, 0.11], [y, y], color=COLORS[r], lw=3.2)
+        ax.text(0.13, y, f"{r} — {DESCRIPTIONS[r]}", va="center", fontsize=8.0,
+                color=COLORS[r], fontweight="bold")
 
 
-def panel_scatter(ax, true, law_pred, sc_pred, title, unit, letter):
+def panel_scatter(ax, p, key, title, letter):
     ax.set_title(f"{letter}  {title}", loc="left", fontsize=9.5, fontweight="bold")
-    lo = min(min(true), min(law_pred), min(sc_pred))
-    hi = max(max(true), max(law_pred), max(sc_pred))
+    true = p["rep"][f"{key}_true"]
+    unit = p["unit"]
+    allv = list(true)
+    for r in p["regimes"]:
+        allv += p["rep"]["models"][r][f"{key}_pred"]
+    lo, hi = min(allv), max(allv)
     ax.plot([lo, hi], [lo, hi], "--", color=ORACLE_COLOR, lw=1.2, zorder=1)
-    ax.scatter(true, sc_pred, s=9, color=SHORTCUT_COLOR, alpha=0.5, edgecolor="none",
-               label="shortcut", zorder=2)
-    ax.scatter(true, law_pred, s=9, color=LAW_COLOR, alpha=0.5, edgecolor="none",
-               label="law", zorder=3)
+    for z, r in enumerate(reversed(p["regimes"])):
+        ax.scatter(true, p["rep"]["models"][r][f"{key}_pred"], s=8, color=COLORS[r],
+                   alpha=0.45, edgecolor="none", label=r, zorder=2 + z)
     ax.set_xlabel(f"true {unit}"); ax.set_ylabel(f"predicted {unit}")
     ax.legend(loc="upper left", fontsize=7.5, frameon=False)
     for s in ("top", "right"):
@@ -443,13 +494,13 @@ def panel_scatter(ax, true, law_pred, sc_pred, title, unit, letter):
 
 
 def panel_sweep(ax, p):
-    ax.set_title("D  Counterfactual sensitivity to the calibration term",
+    ax.set_title("D  Counterfactual response to component j (input audit)",
                  loc="left", fontsize=9.5, fontweight="bold")
     x = p["vj_grid"]
-    ax.plot(x, p["sweep_equation"], color=ORACLE_COLOR, lw=2, label="governing equation")
-    ax.plot(x, p["models"]["law"]["sweep_pred"], color=LAW_COLOR, lw=2, label="law")
-    ax.plot(x, p["models"]["shortcut"]["sweep_pred"], color=SHORTCUT_COLOR, lw=2,
-            label="shortcut")
+    ax.plot(x, p["rep"]["sweep_equation"], color=ORACLE_COLOR, lw=2.4, ls=(0, (4, 2)),
+            label="governing equation", zorder=5)
+    for r in p["regimes"]:
+        ax.plot(x, p["rep"]["models"][r]["sweep_pred"], color=COLORS[r], lw=2, label=r)
     ax.set_xlabel(p["j_name"]); ax.set_ylabel(f"predicted {p['unit']}")
     ax.legend(loc="best", fontsize=7.5, frameon=False)
     for s in ("top", "right"):
@@ -457,18 +508,23 @@ def panel_sweep(ax, p):
 
 
 def panel_iia(ax, p):
-    ax.set_title("E  Interchange-intervention accuracy (causal audit)",
+    ax.set_title("E  Interchange-intervention accuracy (representation audit)",
                  loc="left", fontsize=9.5, fontweight="bold")
-    x = p["k_grid"]
-    ax.plot(x, p["models"]["law"]["iia_curve"], "-o", color=LAW_COLOR, lw=2, ms=5, label="law")
-    ax.plot(x, p["models"]["shortcut"]["iia_curve"], "-o", color=SHORTCUT_COLOR, lw=2, ms=5,
-            label="shortcut")
+    x = np.asarray(p["k_grid"], dtype=float)
+    for r in p["regimes"]:
+        curves = np.asarray(p["per_seed"][r]["iia_curve"])   # (seeds, k)
+        mean, std = curves.mean(0), curves.std(0)
+        ax.plot(x, mean, "-o", color=COLORS[r], lw=2, ms=5, label=r)
+        ax.fill_between(x, mean - std, mean + std, color=COLORS[r], alpha=0.15, lw=0)
     ax.axhline(0.0, color=ORACLE_COLOR, ls=":", lw=1)
+    ax.text(x[0], 0.02, "chance", fontsize=6.8, color=ORACLE_COLOR, va="bottom")
     ax.set_xscale("log", base=2)
-    ax.set_xticks(x); ax.set_xticklabels(x)
-    ax.set_ylim(-0.15, 1.05)
+    ax.set_xticks(x); ax.set_xticklabels([int(k) for k in x])
+    lo = min(-0.15, min(np.asarray(p["per_seed"][r]["iia_curve"]).mean(0).min()
+                        for r in p["regimes"]) - 0.1)
+    ax.set_ylim(lo, 1.08)
     ax.set_xlabel("interchanged subspace dim  k"); ax.set_ylabel("interchange accuracy (R²)")
-    ax.legend(loc="lower right", fontsize=7.5, frameon=False)
+    ax.legend(loc="center right", fontsize=7.5, frameon=False)
     for s in ("top", "right"):
         ax.spines[s].set_visible(False)
 
@@ -477,55 +533,65 @@ def panel_scorecard(ax, p):
     ax.set_title("F  Conventional checks agree; the audits separate",
                  loc="left", fontsize=9.5, fontweight="bold")
     m = p["metrics"]
+    ref = max(m["shortcut"]["ood_mse"]["mean"], 1e-6)
 
-    def skill(mse_val, ref):  # 1 - normalized error, clipped to [0,1]
-        return float(np.clip(1 - mse_val / ref, 0, 1))
-    ref = max(m["shortcut"]["ood_mse"], 1e-6)
-    rows = [
-        ("validation accuracy", skill(m["law"]["val_indist_mse"], ref),
-         skill(m["shortcut"]["val_indist_mse"], ref), "conventional"),
-        ("probe decodes answer", m["law"]["probe_r2_indist"],
-         m["shortcut"]["probe_r2_indist"], "conventional"),
-        ("interchange audit", m["law"]["interchange_accuracy_peak"],
-         m["shortcut"]["interchange_accuracy_peak"], "audit"),
-        ("OOD accuracy (revealed)", skill(m["law"]["ood_mse"], ref),
-         skill(m["shortcut"]["ood_mse"], ref), "audit"),
-    ]
+    def skill(d):
+        return float(np.clip(1 - d["mean"] / ref, 0, 1)), float(d["std"] / ref)
+    # (row label, per-regime (mean, err), family)
+    rows = []
+    rows.append(("validation accuracy",
+                 {r: skill(m[r]["val_indist_mse"]) for r in p["regimes"]}, "conventional"))
+    rows.append(("probe decodes answer",
+                 {r: (m[r]["probe_r2_indist"]["mean"], m[r]["probe_r2_indist"]["std"])
+                  for r in p["regimes"]}, "conventional"))
+    rows.append(("uses component j? (gradient)",
+                 {r: (m[r]["uses_j_score"]["mean"], m[r]["uses_j_score"]["std"])
+                  for r in p["regimes"]}, "conventional"))
+    rows.append(("interchange audit",
+                 {r: (m[r]["interchange_accuracy_peak"]["mean"],
+                      m[r]["interchange_accuracy_peak"]["std"]) for r in p["regimes"]}, "audit"))
+    rows.append(("OOD accuracy (revealed)",
+                 {r: skill(m[r]["ood_mse"]) for r in p["regimes"]}, "audit"))
+
+    offsets = np.linspace(0.16, -0.16, len(p["regimes"]))
     ys = np.arange(len(rows))[::-1]
-    for y, (lbl, lv, sv, kind) in zip(ys, rows):
-        ax.plot([sv, lv], [y, y], color="#c9c9c4", lw=2, zorder=1)
-        ax.scatter(sv, y, s=70, color=SHORTCUT_COLOR, zorder=3)
-        ax.scatter(lv, y, s=70, color=LAW_COLOR, zorder=3)
-        ax.text(-0.02, y, lbl, ha="right", va="center", fontsize=8.2)
-        if kind == "audit":
-            ax.text(1.02, y, "separates", ha="left", va="center", fontsize=7.4,
-                    color="#0b0b0b", fontweight="bold")
-        else:
-            ax.text(1.02, y, "agree", ha="left", va="center", fontsize=7.4, color="#8a8a86")
-    ax.set_xlim(-0.02, 1.02); ax.set_ylim(-0.6, len(rows) - 0.4)
+    for y, (lbl, vals, kind) in zip(ys, rows):
+        means = [vals[r][0] for r in p["regimes"]]
+        for off, r in zip(offsets, p["regimes"]):
+            mean, err = vals[r]
+            ax.errorbar(mean, y + off, xerr=err, fmt="o", ms=6.5, color=COLORS[r],
+                        ecolor=COLORS[r], elinewidth=1.2, capsize=2, zorder=3)
+        ax.text(-0.03, y, lbl, ha="right", va="center", fontsize=8.0)
+        # a check "separates" only if it ranks the trustworthy (law) model clearly
+        # above BOTH untrustworthy models.
+        others = [vals[r][0] for r in p["regimes"] if r != "law"]
+        sep = (vals["law"][0] - max(others)) > 0.3 if others else False
+        ax.text(1.04, y, "isolates law" if sep else "misses unfaithful", ha="left",
+                va="center", fontsize=7.2, fontweight="bold" if sep else "normal",
+                color="#0b0b0b" if sep else "#a08a3a")
+        ax.axhline(y - 0.5, color="#eeeeec", lw=0.8, zorder=0)
+    ax.set_xlim(-0.03, 1.05); ax.set_ylim(-0.6, len(rows) - 0.4)
     ax.set_yticks([])
     ax.set_xlabel("normalized score  (0 = worst, 1 = best)")
-    ax.scatter([], [], s=70, color=LAW_COLOR, label="law")
-    ax.scatter([], [], s=70, color=SHORTCUT_COLOR, label="shortcut")
-    ax.legend(loc="lower center", ncol=2, fontsize=7.5, frameon=False,
-              bbox_to_anchor=(0.5, -0.32))
+    handles = [ax.scatter([], [], s=55, color=COLORS[r], label=r) for r in p["regimes"]]
+    ax.legend(handles=handles, loc="lower center", ncol=len(p["regimes"]), fontsize=7.5,
+              frameon=False, bbox_to_anchor=(0.5, -0.34))
     for s in ("top", "right", "left"):
         ax.spines[s].set_visible(False)
 
 
 def make_figure(p, path):
-    fig, axes = plt.subplots(2, 3, figsize=(15, 8.2))
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8.4))
     law_name = "blood pressure (Moens–Korteweg)" if p["law"] == "blood_pressure" else p["law"]
     fig.suptitle(
-        f"Auditing whether a model causally uses the governing law — {law_name}",
+        f"Auditing whether a model causally uses the governing law — {law_name}"
+        f"   ({p['seeds']} seeds, mean ± s.d.)",
         fontsize=12.5, fontweight="bold", x=0.02, ha="left")
     panel_schematic(axes[0, 0], p)
-    panel_scatter(axes[0, 1], p["val_true"], p["models"]["law"]["val_pred"],
-                  p["models"]["shortcut"]["val_pred"],
-                  "Validation (calibration ≈ fixed): both look perfect", p["unit"], "B")
-    panel_scatter(axes[0, 2], p["ood_true"], p["models"]["law"]["ood_pred"],
-                  p["models"]["shortcut"]["ood_pred"],
-                  "New subjects (calibration varies): shortcut fails", p["unit"], "C")
+    panel_scatter(axes[0, 1], p, "val",
+                  "Validation (j ≈ fixed): all models look identical", "B")
+    panel_scatter(axes[0, 2], p, "ood",
+                  "New subjects (j varies): faithfulness is revealed", "C")
     panel_sweep(axes[1, 0], p)
     panel_iia(axes[1, 1], p)
     panel_scorecard(axes[1, 2], p)
@@ -545,10 +611,12 @@ def main():
     parser.add_argument("--epochs", type=int, default=800)
     parser.add_argument("--width", type=int, default=48)
     parser.add_argument("--das-steps", type=int, default=400)
+    parser.add_argument("--seeds", type=int, default=5)
     parser.add_argument("--quick", action="store_true")
     args = parser.parse_args()
     if args.quick:
-        args.n_train, args.n_eval, args.epochs, args.das_steps = 1500, 600, 500, 250
+        (args.n_train, args.n_eval, args.epochs,
+         args.das_steps, args.seeds) = 2000, 600, 600, 250, 3
     if args.output_dir is None:
         args.output_dir = Path(f"results/causal_mediation_toy/{args.law}")
 
@@ -559,17 +627,17 @@ def main():
     make_figure(payload, args.output_dir / "causal_mediation.png")
 
     m = payload["metrics"]
-    print(f"\n=== Governing-law causal audit ({args.law}) ===")
-    header = f"{'metric':<34}{'law':>12}{'shortcut':>12}"
+    regimes = payload["regimes"]
+    print(f"\n=== Governing-law causal audit ({args.law}, {args.seeds} seeds; mean±sd) ===")
+    header = f"{'metric':<30}" + "".join(f"{r:>18}" for r in regimes)
     print(header); print("-" * len(header))
     for label, key in (("val MSE (practitioner)", "val_indist_mse"),
-                       ("probe R^2 (decodes answer)", "probe_r2_indist"),
-                       ("interchange accuracy (audit)", "interchange_accuracy_peak"),
+                       ("probe R^2 (decodes)", "probe_r2_indist"),
+                       ("uses j? grad [0-1]", "uses_j_score"),
+                       ("interchange acc (audit)", "interchange_accuracy_peak"),
                        ("OOD MSE (revealed)", "ood_mse")):
-        print(f"{label:<34}{m['law'][key]:>12.4f}{m['shortcut'][key]:>12.4f}")
-    print(f"{'|dy/dvj| model (eq value)':<34}"
-          f"{m['law']['model_abs_dy_dvj']:>8.3f} ({m['law']['equation_abs_dy_dvj']:.2f})"
-          f"{m['shortcut']['model_abs_dy_dvj']:>6.3f} ({m['shortcut']['equation_abs_dy_dvj']:.2f})")
+        cells = "".join(f"{m[r][key]['mean']:>10.3f}±{m[r][key]['std']:<6.3f}" for r in regimes)
+        print(f"{label:<30}{cells}")
     print(f"\nwrote {args.output_dir}/metrics.json and causal_mediation.png")
 
 
