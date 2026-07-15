@@ -23,9 +23,15 @@ wandb/
 __pycache__/
 *.py[cod]
 *.pyo
+*.egg-info/
+.venv/
+venv/
+
+# ── Model checkpoints ──────────────────────────────────────────────────────────
+*.pt
+*.pth
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
-*.egg-info/
 .env
 .DS_Store
 actions-runner/

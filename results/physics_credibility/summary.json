@@ -1,0 +1,1176 @@
+{
+  "claim": "Frozen activation probes can detect when a physiological law is incomplete and support selective abstention; this is an audit protocol, not intrinsic self-knowledge.",
+  "equations": {
+    "beer_lambert": "I_lambda(t) = I0 * exp(-(eps_HbO2 * c_HbO2 + eps_Hb * c_Hb) * L(t)); R = (AC_red/DC_red) / (AC_ir/DC_ir); SpO2 = f(R, calibration)",
+    "moens_korteweg": "PWV = sqrt(E * h / (rho * D)); PTT = L / PWV; E(P) = E0 * exp(alpha * P); BP requires subject calibration"
+  },
+  "limitations": [
+    "Simulators use simplified modified Beer-Lambert and Moens-Korteweg approximations.",
+    "Not validated against clinical pulse oximetry or cuffless BP devices.",
+    "Activation probes are external monitors, not intrinsic model uncertainty.",
+    "Held-out corruptions test controlled law violations, not all real-world OOD.",
+    "Do not use for clinical decision-making."
+  ],
+  "config": {
+    "output_dir": "results/physics_credibility",
+    "device": "cuda",
+    "seeds": [
+      0,
+      1,
+      2
+    ],
+    "epochs": 120,
+    "quick": false
+  },
+  "aggregate": {
+    "beer_lambert": {
+      "n_seeds": 3,
+      "mean_clean_mae": 3.4694523016611734,
+      "mean_answerability_auroc": 0.7740972222222222,
+      "mean_probe_aurc": 5.510599132710411,
+      "mean_random_aurc": 4.196844402930897,
+      "decisions": [
+        {
+          "cross_beats_controls": false,
+          "law_statistic_decodable": false,
+          "answerability_above_chance": true,
+          "held_out_detection_above_chance": true,
+          "probe_beats_random_aurc": true,
+          "probe_intervention_beats_random": false
+        },
+        {
+          "cross_beats_controls": false,
+          "law_statistic_decodable": false,
+          "answerability_above_chance": true,
+          "held_out_detection_above_chance": true,
+          "probe_beats_random_aurc": false,
+          "probe_intervention_beats_random": false
+        },
+        {
+          "cross_beats_controls": false,
+          "law_statistic_decodable": false,
+          "answerability_above_chance": true,
+          "held_out_detection_above_chance": true,
+          "probe_beats_random_aurc": false,
+          "probe_intervention_beats_random": false
+        }
+      ]
+    },
+    "moens_korteweg": {
+      "n_seeds": 3,
+      "mean_clean_mae": 15.183876037597656,
+      "mean_answerability_auroc": 0.6041666666666666,
+      "mean_probe_aurc": 15.358057097145808,
+      "mean_random_aurc": 19.385073964216836,
+      "decisions": [
+        {
+          "cross_beats_controls": false,
+          "law_statistic_decodable": false,
+          "answerability_above_chance": true,
+          "held_out_detection_above_chance": false,
+          "probe_beats_random_aurc": true,
+          "probe_intervention_beats_random": true
+        },
+        {
+          "cross_beats_controls": false,
+          "law_statistic_decodable": false,
+          "answerability_above_chance": true,
+          "held_out_detection_above_chance": false,
+          "probe_beats_random_aurc": true,
+          "probe_intervention_beats_random": true
+        },
+        {
+          "cross_beats_controls": false,
+          "law_statistic_decodable": false,
+          "answerability_above_chance": true,
+          "held_out_detection_above_chance": false,
+          "probe_beats_random_aurc": true,
+          "probe_intervention_beats_random": false
+        }
+      ]
+    }
+  },
+  "reports": [
+    {
+      "law": "beer_lambert",
+      "seed": 0,
+      "models": {
+        "cross_attention": {
+          "scenario_mae": {
+            "clean": 3.4091358184814453,
+            "missing_red": 3.246896266937256,
+            "missing_ir": 3.685638427734375,
+            "wavelength_mismatch": 3.4897048473358154,
+            "calibration_shift": 3.84773588180542,
+            "pigmentation_shift": 3.794416904449463,
+            "motion_noise": 3.370964765548706,
+            "model_discrepancy": 3.794842481613159
+          },
+          "probe_r2": {
+            "ratio_r": -4.045786031931591
+          },
+          "answerability_all": {
+            "auroc": 0.6963229166666667,
+            "auprc": 0.8455754260305035,
+            "brier": 0.28996456222476097,
+            "ece": 0.27697592152502903
+          },
+          "answerability_held_out": {
+            "auroc": 0.65,
+            "auprc": 0.8986887569620158
+          },
+          "selective": {
+            "probe": {
+              "aurc": 3.4940665144632423,
+              "risk": {
+                "50%": 3.5087460041046143,
+                "80%": 3.531842514872551,
+                "100%": 3.5799169659614565
+              }
+            },
+            "random": {
+              "aurc": 3.6753020323461376,
+              "risk": {
+                "50%": 3.688986086845398,
+                "80%": 3.590560331940651,
+                "100%": 3.5799169659614565
+              }
+            },
+            "empirical": {
+              "aurc": 3.493767478902408,
+              "risk": {
+                "50%": 3.50527286529541,
+                "80%": 3.5294030159711838,
+                "100%": 3.5799169659614565
+              }
+            }
+          }
+        },
+        "low_capacity": {
+          "scenario_mae": {
+            "clean": 3.3862738609313965,
+            "missing_red": 3.2383201122283936,
+            "missing_ir": 3.677647352218628,
+            "wavelength_mismatch": 3.7068123817443848,
+            "calibration_shift": 3.822563886642456,
+            "pigmentation_shift": 3.746861219406128,
+            "motion_noise": 14.981866836547852,
+            "model_discrepancy": 3.834880828857422
+          },
+          "probe_r2": {
+            "ratio_r": -4.272940418088223
+          },
+          "answerability_all": {
+            "auroc": 0.7099895833333334,
+            "auprc": 0.8500965587123073,
+            "brier": 0.24437318562955718,
+            "ece": 0.21169278231116723
+          },
+          "answerability_held_out": {
+            "auroc": 0.6666666666666666,
+            "auprc": 0.9042793759753645
+          },
+          "selective": {
+            "probe": {
+              "aurc": 8.02502343091234,
+              "risk": {
+                "50%": 6.41904456615448,
+                "80%": 5.363294765353203,
+                "100%": 5.049403405189514
+              }
+            },
+            "random": {
+              "aurc": 5.185666234029623,
+              "risk": {
+                "50%": 5.161809086799622,
+                "80%": 5.203148290514946,
+                "100%": 5.049403405189514
+              }
+            },
+            "empirical": {
+              "aurc": 7.966862556177626,
+              "risk": {
+                "50%": 6.41904456615448,
+                "80%": 5.363294765353203,
+                "100%": 5.049403405189514
+              }
+            }
+          }
+        },
+        "no_retrieval": {
+          "scenario_mae": {
+            "clean": 3.4781577587127686,
+            "missing_red": 3.4480392932891846,
+            "missing_ir": 3.71156644821167,
+            "wavelength_mismatch": 3.9865975379943848,
+            "calibration_shift": 3.877830982208252,
+            "pigmentation_shift": 3.621532917022705,
+            "motion_noise": 12.835456848144531,
+            "model_discrepancy": 3.7874748706817627
+          },
+          "probe_r2": {
+            "ratio_r": -0.39433136291862136
+          },
+          "answerability_all": {
+            "auroc": 0.9992708333333333,
+            "auprc": 0.9995799184606972,
+            "brier": 0.03147959628006687,
+            "ece": 0.05533558017355608
+          },
+          "answerability_held_out": {
+            "auroc": 1.0,
+            "auprc": 1.0
+          },
+          "selective": {
+            "probe": {
+              "aurc": 7.242277865937885,
+              "risk": {
+                "50%": 6.000167560577393,
+                "80%": 5.04447802901268,
+                "100%": 4.8433320164680485
+              }
+            },
+            "random": {
+              "aurc": 4.931499765014313,
+              "risk": {
+                "50%": 4.902649402618408,
+                "80%": 4.93510739505291,
+                "100%": 4.8433320164680485
+              }
+            },
+            "empirical": {
+              "aurc": 7.127147260988443,
+              "risk": {
+                "50%": 6.000167560577393,
+                "80%": 5.040869638323784,
+                "100%": 4.8433320164680485
+              }
+            }
+          }
+        }
+      },
+      "intervention": {
+        "baseline_readout_mae": 3.305790662765503,
+        "probe_direction_ablated_mae": 3.3046576976776123,
+        "random_direction_ablated_mae": 3.305830717086792,
+        "probe_beats_random_intervention": false
+      },
+      "decision": {
+        "cross_beats_controls": false,
+        "law_statistic_decodable": false,
+        "answerability_above_chance": true,
+        "held_out_detection_above_chance": true,
+        "probe_beats_random_aurc": true,
+        "probe_intervention_beats_random": false
+      },
+      "held_out_scenarios": [
+        "wavelength_mismatch",
+        "motion_noise",
+        "model_discrepancy"
+      ]
+    },
+    {
+      "law": "moens_korteweg",
+      "seed": 0,
+      "models": {
+        "cross_attention": {
+          "scenario_mae": {
+            "clean": 15.680094718933105,
+            "missing_path_length": 14.765310287475586,
+            "missing_stiffness_cal": 14.755186080932617,
+            "missing_distal": 43.75649642944336,
+            "temporal_shift": 13.119097709655762,
+            "anatomy_shift": 16.46468734741211,
+            "viscoelastic_shift": 14.405802726745605,
+            "model_discrepancy": 16.77730369567871
+          },
+          "probe_r2": {
+            "ptt_ms": -0.004767822564670343,
+            "pwv": -0.01057338092213489
+          },
+          "answerability_all": {
+            "auroc": 0.5991666666666666,
+            "auprc": 0.6729340206239969,
+            "brier": 0.2595116667977514,
+            "ece": 0.21394979073444526
+          },
+          "answerability_held_out": {
+            "auroc": 0.35708333333333325,
+            "auprc": 0.6946947154586717
+          },
+          "selective": {
+            "probe": {
+              "aurc": 15.067887338136437,
+              "risk": {
+                "50%": 14.679779243469238,
+                "80%": 15.235963001847267,
+                "100%": 18.715498006343843
+              }
+            },
+            "random": {
+              "aurc": 19.107851493925583,
+              "risk": {
+                "50%": 19.103512382507326,
+                "80%": 19.10515660047531,
+                "100%": 18.715498006343843
+              }
+            },
+            "empirical": {
+              "aurc": 15.56796309011589,
+              "risk": {
+                "50%": 14.679779243469238,
+                "80%": 17.003821060061455,
+                "100%": 18.715498006343843
+              }
+            }
+          }
+        },
+        "low_capacity": {
+          "scenario_mae": {
+            "clean": 15.76011848449707,
+            "missing_path_length": 14.776473999023438,
+            "missing_stiffness_cal": 14.783368110656738,
+            "missing_distal": 46.5694694519043,
+            "temporal_shift": 13.116813659667969,
+            "anatomy_shift": 16.46857452392578,
+            "viscoelastic_shift": 14.505602836608887,
+            "model_discrepancy": 16.744075775146484
+          },
+          "probe_r2": {
+            "ptt_ms": -0.004749349188903018,
+            "pwv": -0.01072471560276278
+          },
+          "answerability_all": {
+            "auroc": 0.5961666666666667,
+            "auprc": 0.6681065040959042,
+            "brier": 0.25874523183590686,
+            "ece": 0.21456730840637864
+          },
+          "answerability_held_out": {
+            "auroc": 0.35723958333333333,
+            "auprc": 0.692032212735793
+          },
+          "selective": {
+            "probe": {
+              "aurc": 15.174445325675999,
+              "risk": {
+                "50%": 14.7300785779953,
+                "80%": 15.273751497268677,
+                "100%": 19.09056239128113
+              }
+            },
+            "random": {
+              "aurc": 19.5315712543663,
+              "risk": {
+                "50%": 19.499081921577453,
+                "80%": 19.495654925704002,
+                "100%": 19.09056239128113
+              }
+            },
+            "empirical": {
+              "aurc": 15.713300568291439,
+              "risk": {
+                "50%": 14.7300785779953,
+                "80%": 17.266028359532356,
+                "100%": 19.09056239128113
+              }
+            }
+          }
+        },
+        "no_retrieval": {
+          "scenario_mae": {
+            "clean": 15.471479415893555,
+            "missing_path_length": 14.617307662963867,
+            "missing_stiffness_cal": 14.871241569519043,
+            "missing_distal": 36.52228927612305,
+            "temporal_shift": 13.500958442687988,
+            "anatomy_shift": 16.490812301635742,
+            "viscoelastic_shift": 14.263211250305176,
+            "model_discrepancy": 16.72517967224121
+          },
+          "probe_r2": {
+            "ptt_ms": -0.005685345125771235,
+            "pwv": -0.017928910311387325
+          },
+          "answerability_all": {
+            "auroc": 0.5662604166666667,
+            "auprc": 0.6415279221651387,
+            "brier": 0.26137494684433477,
+            "ece": 0.23170200036204863
+          },
+          "answerability_held_out": {
+            "auroc": 0.35817708333333337,
+            "auprc": 0.694129113659945
+          },
+          "selective": {
+            "probe": {
+              "aurc": 15.317449096981438,
+              "risk": {
+                "50%": 15.290462017059326,
+                "80%": 15.205726504325867,
+                "100%": 17.807810020446777
+              }
+            },
+            "random": {
+              "aurc": 18.03070735007933,
+              "risk": {
+                "50%": 18.131797075271606,
+                "80%": 18.129710152745247,
+                "100%": 17.807810020446777
+              }
+            },
+            "empirical": {
+              "aurc": 15.267058242608929,
+              "risk": {
+                "50%": 15.290462017059326,
+                "80%": 15.211383044719696,
+                "100%": 17.807810020446777
+              }
+            }
+          }
+        }
+      },
+      "intervention": {
+        "baseline_readout_mae": 15.189468383789062,
+        "probe_direction_ablated_mae": 15.216093063354492,
+        "random_direction_ablated_mae": 15.189699172973633,
+        "probe_beats_random_intervention": true
+      },
+      "decision": {
+        "cross_beats_controls": false,
+        "law_statistic_decodable": false,
+        "answerability_above_chance": true,
+        "held_out_detection_above_chance": false,
+        "probe_beats_random_aurc": true,
+        "probe_intervention_beats_random": true
+      },
+      "held_out_scenarios": [
+        "viscoelastic_shift",
+        "model_discrepancy",
+        "missing_path_length"
+      ]
+    },
+    {
+      "law": "beer_lambert",
+      "seed": 1,
+      "models": {
+        "cross_attention": {
+          "scenario_mae": {
+            "clean": 3.737846851348877,
+            "missing_red": 3.33697509765625,
+            "missing_ir": 3.881753444671631,
+            "wavelength_mismatch": 3.217845916748047,
+            "calibration_shift": 3.484149217605591,
+            "pigmentation_shift": 3.1737632751464844,
+            "motion_noise": 9.530752182006836,
+            "model_discrepancy": 3.419473171234131
+          },
+          "probe_r2": {
+            "ratio_r": -49.93839452611003
+          },
+          "answerability_all": {
+            "auroc": 0.7118437500000001,
+            "auprc": 0.8507744563297325,
+            "brier": 0.2619084747055867,
+            "ece": 0.22349873944201262
+          },
+          "answerability_held_out": {
+            "auroc": 0.6666666666666666,
+            "auprc": 0.9042793759753645
+          },
+          "selective": {
+            "probe": {
+              "aurc": 5.74548483122606,
+              "risk": {
+                "50%": 4.981856894493103,
+                "80%": 4.45344378054142,
+                "100%": 4.222819912433624
+              }
+            },
+            "random": {
+              "aurc": 4.230741728782931,
+              "risk": {
+                "50%": 4.154308700561524,
+                "80%": 4.202641099691391,
+                "100%": 4.222819912433624
+              }
+            },
+            "empirical": {
+              "aurc": 5.638850700405136,
+              "risk": {
+                "50%": 4.972283148765564,
+                "80%": 4.45344378054142,
+                "100%": 4.222819912433624
+              }
+            }
+          }
+        },
+        "low_capacity": {
+          "scenario_mae": {
+            "clean": 3.7366013526916504,
+            "missing_red": 3.3336665630340576,
+            "missing_ir": 3.891007900238037,
+            "wavelength_mismatch": 3.253535032272339,
+            "calibration_shift": 3.421630859375,
+            "pigmentation_shift": 3.178133726119995,
+            "motion_noise": 3.817676544189453,
+            "model_discrepancy": 3.3241817951202393
+          },
+          "probe_r2": {
+            "ratio_r": -15.314786243988571
+          },
+          "answerability_all": {
+            "auroc": 0.8488229166666668,
+            "auprc": 0.9227443347918252,
+            "brier": 0.17537215042384355,
+            "ece": 0.1296931037201343
+          },
+          "answerability_held_out": {
+            "auroc": 0.9416666666666667,
+            "auprc": 0.9851118389726194
+          },
+          "selective": {
+            "probe": {
+              "aurc": 3.611644482616578,
+              "risk": {
+                "50%": 3.5117480754852295,
+                "80%": 3.531644195318222,
+                "100%": 3.4945542097091673
+              }
+            },
+            "random": {
+              "aurc": 3.550065808372218,
+              "risk": {
+                "50%": 3.5270052194595336,
+                "80%": 3.490026980638504,
+                "100%": 3.4945542097091673
+              }
+            },
+            "empirical": {
+              "aurc": 3.5156510369099454,
+              "risk": {
+                "50%": 3.524299168586731,
+                "80%": 3.534497618675232,
+                "100%": 3.4945542097091673
+              }
+            }
+          }
+        },
+        "no_retrieval": {
+          "scenario_mae": {
+            "clean": 3.7530369758605957,
+            "missing_red": 3.3989803791046143,
+            "missing_ir": 3.8921799659729004,
+            "wavelength_mismatch": 3.171109676361084,
+            "calibration_shift": 3.59590482711792,
+            "pigmentation_shift": 3.2651515007019043,
+            "motion_noise": 11.595643997192383,
+            "model_discrepancy": 4.080502510070801
+          },
+          "probe_r2": {
+            "ratio_r": -2.9656124556868484
+          },
+          "answerability_all": {
+            "auroc": 0.9999374999999999,
+            "auprc": 0.9999630541871921,
+            "brier": 0.03854329402190772,
+            "ece": 0.07201714814177915
+          },
+          "answerability_held_out": {
+            "auroc": 1.0,
+            "auprc": 1.0
+          },
+          "selective": {
+            "probe": {
+              "aurc": 6.712515397194061,
+              "risk": {
+                "50%": 5.711110186576843,
+                "80%": 4.894335255026817,
+                "100%": 4.594063580036163
+              }
+            },
+            "random": {
+              "aurc": 4.6470061382643495,
+              "risk": {
+                "50%": 4.586036205291748,
+                "80%": 4.618261888623238,
+                "100%": 4.594063580036163
+              }
+            },
+            "empirical": {
+              "aurc": 6.554830758261046,
+              "risk": {
+                "50%": 5.716234421730041,
+                "80%": 4.873030886054039,
+                "100%": 4.594063580036163
+              }
+            }
+          }
+        }
+      },
+      "intervention": {
+        "baseline_readout_mae": 3.7277779579162598,
+        "probe_direction_ablated_mae": 3.727381467819214,
+        "random_direction_ablated_mae": 3.7277743816375732,
+        "probe_beats_random_intervention": false
+      },
+      "decision": {
+        "cross_beats_controls": false,
+        "law_statistic_decodable": false,
+        "answerability_above_chance": true,
+        "held_out_detection_above_chance": true,
+        "probe_beats_random_aurc": false,
+        "probe_intervention_beats_random": false
+      },
+      "held_out_scenarios": [
+        "wavelength_mismatch",
+        "motion_noise",
+        "model_discrepancy"
+      ]
+    },
+    {
+      "law": "moens_korteweg",
+      "seed": 1,
+      "models": {
+        "cross_attention": {
+          "scenario_mae": {
+            "clean": 14.298395156860352,
+            "missing_path_length": 16.4586238861084,
+            "missing_stiffness_cal": 15.885046005249023,
+            "missing_distal": 41.87369918823242,
+            "temporal_shift": 13.703231811523438,
+            "anatomy_shift": 16.576702117919922,
+            "viscoelastic_shift": 15.351773262023926,
+            "model_discrepancy": 13.456497192382812
+          },
+          "probe_r2": {
+            "ptt_ms": -0.0005673611336654005,
+            "pwv": -0.042563767889078674
+          },
+          "answerability_all": {
+            "auroc": 0.6175208333333334,
+            "auprc": 0.6777755630624477,
+            "brier": 0.247553046620652,
+            "ece": 0.21362849823528465
+          },
+          "answerability_held_out": {
+            "auroc": 0.36515624999999996,
+            "auprc": 0.6977551695083963
+          },
+          "selective": {
+            "probe": {
+              "aurc": 15.40808869806077,
+              "risk": {
+                "50%": 15.316843509674072,
+                "80%": 15.064648926258087,
+                "100%": 18.45049641132355
+              }
+            },
+            "random": {
+              "aurc": 18.19196774132354,
+              "risk": {
+                "50%": 18.20256962776184,
+                "80%": 18.12967337667942,
+                "100%": 18.45049641132355
+              }
+            },
+            "empirical": {
+              "aurc": 15.850846358457524,
+              "risk": {
+                "50%": 15.3290381193161,
+                "80%": 16.549129515886307,
+                "100%": 18.45049641132355
+              }
+            }
+          }
+        },
+        "low_capacity": {
+          "scenario_mae": {
+            "clean": 14.297950744628906,
+            "missing_path_length": 16.396835327148438,
+            "missing_stiffness_cal": 15.983926773071289,
+            "missing_distal": 50.45711135864258,
+            "temporal_shift": 13.716397285461426,
+            "anatomy_shift": 16.635719299316406,
+            "viscoelastic_shift": 15.383306503295898,
+            "model_discrepancy": 13.387079238891602
+          },
+          "probe_r2": {
+            "ptt_ms": -0.0006843367007260959,
+            "pwv": -0.04204441191501407
+          },
+          "answerability_all": {
+            "auroc": 0.6125625,
+            "auprc": 0.6796596807762183,
+            "brier": 0.24870461213651557,
+            "ece": 0.2152151735744941
+          },
+          "answerability_held_out": {
+            "auroc": 0.36041666666666666,
+            "auprc": 0.708757371766829
+          },
+          "selective": {
+            "probe": {
+              "aurc": 15.492774402448811,
+              "risk": {
+                "50%": 15.212308478355407,
+                "80%": 15.151674196124077,
+                "100%": 19.532290649414062
+              }
+            },
+            "random": {
+              "aurc": 19.109681595073127,
+              "risk": {
+                "50%": 19.15250618457794,
+                "80%": 19.071806967258453,
+                "100%": 19.532290649414062
+              }
+            },
+            "empirical": {
+              "aurc": 16.075916901614512,
+              "risk": {
+                "50%": 15.212308478355407,
+                "80%": 16.93295595049858,
+                "100%": 19.532290649414062
+              }
+            }
+          }
+        },
+        "no_retrieval": {
+          "scenario_mae": {
+            "clean": 14.39350414276123,
+            "missing_path_length": 16.553680419921875,
+            "missing_stiffness_cal": 15.875211715698242,
+            "missing_distal": 30.38962173461914,
+            "temporal_shift": 13.530380249023438,
+            "anatomy_shift": 16.73752784729004,
+            "viscoelastic_shift": 15.310430526733398,
+            "model_discrepancy": 13.525579452514648
+          },
+          "probe_r2": {
+            "ptt_ms": -0.0029153385523157382,
+            "pwv": -0.04092988452460733
+          },
+          "answerability_all": {
+            "auroc": 0.5737708333333332,
+            "auprc": 0.6473960339252226,
+            "brier": 0.25767600429034576,
+            "ece": 0.22550162487152128
+          },
+          "answerability_held_out": {
+            "auroc": 0.40218750000000003,
+            "auprc": 0.7196455683705127
+          },
+          "selective": {
+            "probe": {
+              "aurc": 15.216719707312127,
+              "risk": {
+                "50%": 15.604234004020691,
+                "80%": 15.248926296830177,
+                "100%": 17.039492309093475
+              }
+            },
+            "random": {
+              "aurc": 17.103957142172426,
+              "risk": {
+                "50%": 17.030744886398317,
+                "80%": 16.887018904089928,
+                "100%": 17.039492309093475
+              }
+            },
+            "empirical": {
+              "aurc": 15.232027041223855,
+              "risk": {
+                "50%": 15.604234004020691,
+                "80%": 15.248926296830177,
+                "100%": 17.039492309093475
+              }
+            }
+          }
+        }
+      },
+      "intervention": {
+        "baseline_readout_mae": 14.18853759765625,
+        "probe_direction_ablated_mae": 14.201690673828125,
+        "random_direction_ablated_mae": 14.188265800476074,
+        "probe_beats_random_intervention": true
+      },
+      "decision": {
+        "cross_beats_controls": false,
+        "law_statistic_decodable": false,
+        "answerability_above_chance": true,
+        "held_out_detection_above_chance": false,
+        "probe_beats_random_aurc": true,
+        "probe_intervention_beats_random": true
+      },
+      "held_out_scenarios": [
+        "viscoelastic_shift",
+        "model_discrepancy",
+        "missing_path_length"
+      ]
+    },
+    {
+      "law": "beer_lambert",
+      "seed": 2,
+      "models": {
+        "cross_attention": {
+          "scenario_mae": {
+            "clean": 3.2613742351531982,
+            "missing_red": 3.017855405807495,
+            "missing_ir": 3.4188811779022217,
+            "wavelength_mismatch": 3.4037468433380127,
+            "calibration_shift": 3.4276421070098877,
+            "pigmentation_shift": 3.7313976287841797,
+            "motion_noise": 12.107386589050293,
+            "model_discrepancy": 5.531236171722412
+          },
+          "probe_r2": {
+            "ratio_r": -6.015218316312382
+          },
+          "answerability_all": {
+            "auroc": 0.9141250000000001,
+            "auprc": 0.9483053022605714,
+            "brier": 0.1354512289979439,
+            "ece": 0.13260832497457484
+          },
+          "answerability_held_out": {
+            "auroc": 1.0,
+            "auprc": 1.0
+          },
+          "selective": {
+            "probe": {
+              "aurc": 7.292246052441932,
+              "risk": {
+                "50%": 6.0881435632705685,
+                "80%": 5.066683351993561,
+                "100%": 4.737440025806427
+              }
+            },
+            "random": {
+              "aurc": 4.684489447663623,
+              "risk": {
+                "50%": 4.783479762077332,
+                "80%": 4.65225912630558,
+                "100%": 4.737440025806427
+              }
+            },
+            "empirical": {
+              "aurc": 7.056027707653929,
+              "risk": {
+                "50%": 6.0881435632705685,
+                "80%": 5.066683351993561,
+                "100%": 4.737440025806427
+              }
+            }
+          }
+        },
+        "low_capacity": {
+          "scenario_mae": {
+            "clean": 3.259875535964966,
+            "missing_red": 3.020519733428955,
+            "missing_ir": 3.4188811779022217,
+            "wavelength_mismatch": 3.408820390701294,
+            "calibration_shift": 3.4580459594726562,
+            "pigmentation_shift": 3.7345993518829346,
+            "motion_noise": 10.377087593078613,
+            "model_discrepancy": 5.075133323669434
+          },
+          "probe_r2": {
+            "ratio_r": -3.4309511751654007
+          },
+          "answerability_all": {
+            "auroc": 0.9122395833333334,
+            "auprc": 0.9471462322395411,
+            "brier": 0.1365811244413678,
+            "ece": 0.13309900566186442
+          },
+          "answerability_held_out": {
+            "auroc": 1.0,
+            "auprc": 1.0
+          },
+          "selective": {
+            "probe": {
+              "aurc": 6.351530116246408,
+              "risk": {
+                "50%": 5.569379615783691,
+                "80%": 4.7319365888834,
+                "100%": 4.469120287895203
+              }
+            },
+            "random": {
+              "aurc": 4.405155724590376,
+              "risk": {
+                "50%": 4.481234765052795,
+                "80%": 4.385241329669952,
+                "100%": 4.469120287895203
+              }
+            },
+            "empirical": {
+              "aurc": 6.304707458956303,
+              "risk": {
+                "50%": 5.550865387916565,
+                "80%": 4.7319365888834,
+                "100%": 4.469120287895203
+              }
+            }
+          }
+        },
+        "no_retrieval": {
+          "scenario_mae": {
+            "clean": 3.2445406913757324,
+            "missing_red": 3.2308127880096436,
+            "missing_ir": 3.4405674934387207,
+            "wavelength_mismatch": 3.4902350902557373,
+            "calibration_shift": 3.591204881668091,
+            "pigmentation_shift": 3.8123137950897217,
+            "motion_noise": 13.79491138458252,
+            "model_discrepancy": 3.4247939586639404
+          },
+          "probe_r2": {
+            "ratio_r": -0.17383096824067001
+          },
+          "answerability_all": {
+            "auroc": 0.9999791666666666,
+            "auprc": 0.9999875155860349,
+            "brier": 0.04485311859238773,
+            "ece": 0.07864651322781119
+          },
+          "answerability_held_out": {
+            "auroc": 1.0,
+            "auprc": 1.0
+          },
+          "selective": {
+            "probe": {
+              "aurc": 7.354311439659032,
+              "risk": {
+                "50%": 5.973651719093323,
+                "80%": 5.043804511427879,
+                "100%": 4.753672397136688
+              }
+            },
+            "random": {
+              "aurc": 4.597865392607478,
+              "risk": {
+                "50%": 4.70802915096283,
+                "80%": 4.643056139349937,
+                "100%": 4.753672397136688
+              }
+            },
+            "empirical": {
+              "aurc": 7.355816182228391,
+              "risk": {
+                "50%": 5.984123778343201,
+                "80%": 5.081822112202644,
+                "100%": 4.753672397136688
+              }
+            }
+          }
+        }
+      },
+      "intervention": {
+        "baseline_readout_mae": 3.2615184783935547,
+        "probe_direction_ablated_mae": 3.2607102394104004,
+        "random_direction_ablated_mae": 3.2614407539367676,
+        "probe_beats_random_intervention": false
+      },
+      "decision": {
+        "cross_beats_controls": false,
+        "law_statistic_decodable": false,
+        "answerability_above_chance": true,
+        "held_out_detection_above_chance": true,
+        "probe_beats_random_aurc": false,
+        "probe_intervention_beats_random": false
+      },
+      "held_out_scenarios": [
+        "wavelength_mismatch",
+        "motion_noise",
+        "model_discrepancy"
+      ]
+    },
+    {
+      "law": "moens_korteweg",
+      "seed": 2,
+      "models": {
+        "cross_attention": {
+          "scenario_mae": {
+            "clean": 15.573138236999512,
+            "missing_path_length": 15.328056335449219,
+            "missing_stiffness_cal": 16.256771087646484,
+            "missing_distal": 58.130645751953125,
+            "temporal_shift": 15.181684494018555,
+            "anatomy_shift": 15.13915729522705,
+            "viscoelastic_shift": 16.224885940551758,
+            "model_discrepancy": 14.766263008117676
+          },
+          "probe_r2": {
+            "ptt_ms": -0.010327286912161115,
+            "pwv": -0.019688681652950013
+          },
+          "answerability_all": {
+            "auroc": 0.5958125000000001,
+            "auprc": 0.656035450455958,
+            "brier": 0.24915082611655798,
+            "ece": 0.21221620778892594
+          },
+          "answerability_held_out": {
+            "auroc": 0.34078125,
+            "auprc": 0.6729545406560549
+          },
+          "selective": {
+            "probe": {
+              "aurc": 15.598195255240217,
+              "risk": {
+                "50%": 15.603279757499696,
+                "80%": 15.345097795128822,
+                "100%": 20.82507541179657
+              }
+            },
+            "random": {
+              "aurc": 20.855402657401385,
+              "risk": {
+                "50%": 20.3275417804718,
+                "80%": 20.86713506281376,
+                "100%": 20.82507541179657
+              }
+            },
+            "empirical": {
+              "aurc": 16.311753393992454,
+              "risk": {
+                "50%": 15.603279757499696,
+                "80%": 17.705823585391045,
+                "100%": 20.82507541179657
+              }
+            }
+          }
+        },
+        "low_capacity": {
+          "scenario_mae": {
+            "clean": 15.546972274780273,
+            "missing_path_length": 15.406326293945312,
+            "missing_stiffness_cal": 16.179975509643555,
+            "missing_distal": 44.431007385253906,
+            "temporal_shift": 15.124079704284668,
+            "anatomy_shift": 15.171600341796875,
+            "viscoelastic_shift": 15.698199272155762,
+            "model_discrepancy": 14.774435043334961
+          },
+          "probe_r2": {
+            "ptt_ms": -0.01043949032166891,
+            "pwv": -0.01956228784517977
+          },
+          "answerability_all": {
+            "auroc": 0.59503125,
+            "auprc": 0.6553205169071974,
+            "brier": 0.25053686963800104,
+            "ece": 0.21369325606172335
+          },
+          "answerability_held_out": {
+            "auroc": 0.34182291666666664,
+            "auprc": 0.6748151924888603
+          },
+          "selective": {
+            "probe": {
+              "aurc": 15.526707298444554,
+              "risk": {
+                "50%": 15.619502472877503,
+                "80%": 15.409286677837372,
+                "100%": 19.041574788093566
+              }
+            },
+            "random": {
+              "aurc": 19.335254746029225,
+              "risk": {
+                "50%": 18.82906332015991,
+                "80%": 19.06651370227337,
+                "100%": 19.041574788093566
+              }
+            },
+            "empirical": {
+              "aurc": 16.007917438117175,
+              "risk": {
+                "50%": 15.607919192314148,
+                "80%": 16.979431837797165,
+                "100%": 19.041574788093566
+              }
+            }
+          }
+        },
+        "no_retrieval": {
+          "scenario_mae": {
+            "clean": 15.636543273925781,
+            "missing_path_length": 15.605883598327637,
+            "missing_stiffness_cal": 15.949010848999023,
+            "missing_distal": 29.961467742919922,
+            "temporal_shift": 15.153844833374023,
+            "anatomy_shift": 15.178545951843262,
+            "viscoelastic_shift": 15.231550216674805,
+            "model_discrepancy": 14.583108901977539
+          },
+          "probe_r2": {
+            "ptt_ms": -0.006383010962507818,
+            "pwv": -0.014529226335963763
+          },
+          "answerability_all": {
+            "auroc": 0.5492916666666667,
+            "auprc": 0.6381111078537806,
+            "brier": 0.2553181722805459,
+            "ece": 0.22314831770577584
+          },
+          "answerability_held_out": {
+            "auroc": 0.3527604166666666,
+            "auprc": 0.7001966976397996
+          },
+          "selective": {
+            "probe": {
+              "aurc": 15.620300572297658,
+              "risk": {
+                "50%": 15.626506757736205,
+                "80%": 15.380471840500832,
+                "100%": 17.16249507665634
+              }
+            },
+            "random": {
+              "aurc": 17.75950806689071,
+              "risk": {
+                "50%": 17.255071210861207,
+                "80%": 17.162832111120224,
+                "100%": 17.16249507665634
+              }
+            },
+            "empirical": {
+              "aurc": 15.609800184621696,
+              "risk": {
+                "50%": 15.626506757736205,
+                "80%": 15.380471840500832,
+                "100%": 17.16249507665634
+              }
+            }
+          }
+        }
+      },
+      "intervention": {
+        "baseline_readout_mae": 15.39824104309082,
+        "probe_direction_ablated_mae": 15.385920524597168,
+        "random_direction_ablated_mae": 15.397344589233398,
+        "probe_beats_random_intervention": false
+      },
+      "decision": {
+        "cross_beats_controls": false,
+        "law_statistic_decodable": false,
+        "answerability_above_chance": true,
+        "held_out_detection_above_chance": false,
+        "probe_beats_random_aurc": true,
+        "probe_intervention_beats_random": false
+      },
+      "held_out_scenarios": [
+        "viscoelastic_shift",
+        "model_discrepancy",
+        "missing_path_length"
+      ]
+    }
+  ],
+  "overall_decision": {
+    "beer_success": false,
+    "mk_success": true
+  }
+}
