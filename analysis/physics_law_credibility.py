@@ -1267,6 +1267,335 @@ def export_summary(
     return path
 
 
+# ── Causal-mediation BP audit (BP = a * PTT governing law + confound) ──────────
+#
+# The audits above detect *contextual* unanswerability: a channel is missing, so
+# the input itself is incomplete.  This section tests a stronger, distribution-
+# internal question: does the model compute BP *through* the governing mediator
+# PTT, or does it exploit a spurious shortcut that happens to predict BP in the
+# training distribution?  A model can be accurate in-distribution for the wrong
+# reason.  We certify the mechanism causally by patching the model's own PTT
+# representation and checking that its BP output moves by the physical slope a.
+
+FS_PTT = 200.0
+LINEAR_BP_A = -0.30  # mmHg per ms; higher PTT -> lower BP
+LINEAR_BP_B = 180.0
+# The confound rides a stronger, cleaner channel than PTT, so once it tracks BP
+# in training (high correlation) the optimizer prefers it and abandons the
+# causal PTT path -- exactly the untrustworthy shortcut we want to detect.
+PTT_GAIN, PTT_NOISE = 0.50, 0.05
+CONFOUND_GAIN, CONFOUND_NOISE = 0.70, 0.015
+
+
+@dataclass
+class LinearBPSample:
+    proximal: np.ndarray
+    distal: np.ndarray
+    bp: float
+    ptt_ms: float
+    confound: float
+    scenario: str
+
+
+def generate_linear_bp_sample(
+    rng: np.random.Generator,
+    scenario: str,
+    confound_corr: float,
+    a: float = LINEAR_BP_A,
+    b: float = LINEAR_BP_B,
+    win_len: int = WIN_LEN,
+    fs: float = FS_PTT,
+) -> LinearBPSample:
+    """Two pulse streams; the value stream carries PTT and a confound side by side.
+
+    ``TwoStreamCrossAttention`` draws its output values only from ``stream_b``, so
+    both the legitimate mediator (PTT) and the spurious ``confound`` are written
+    into ``stream_b``: its first half's level encodes PTT, its second half's level
+    encodes the confound on a cleaner, easier-to-read channel.  In the
+    training/clean regime the confound is correlated with PTT, so it is a usable
+    shortcut for BP; in the ``ood`` regime it is drawn independently, breaking the
+    shortcut while leaving the causal PTT path intact.  PTT is encoded as a
+    readable channel level (rather than a sub-sample delay) so a mean-pooling toy
+    model can actually learn the causal path; a delay-based encoder is a realistic
+    extension.
+    """
+    ptt_ms = float(rng.uniform(100.0, 240.0))
+    hr = float(rng.uniform(55, 95))
+    pulse = _pulse_wave(win_len, hr, fs).astype(np.float32)
+    carrier = 1.0 + 0.3 * pulse  # strictly positive so channel level is readable
+    ptt_std = (ptt_ms - 170.0) / 40.0
+
+    if scenario == "ood":
+        confound = float(rng.normal())
+    else:
+        rho = float(np.clip(confound_corr, 0.0, 0.999))
+        confound = rho * ptt_std + math.sqrt(1.0 - rho * rho) * float(rng.normal())
+
+    # PTT rides a noisier half of the value stream; the confound rides a cleaner
+    # half, so the shortcut is tempting whenever it tracks PTT in training.
+    amp_ptt = 1.0 + PTT_GAIN * ptt_std + float(rng.normal(0, PTT_NOISE))
+    amp_conf = 1.0 + CONFOUND_GAIN * confound + float(rng.normal(0, CONFOUND_NOISE))
+    half = win_len // 2
+    distal = np.empty(win_len, dtype=np.float32)
+    distal[:half] = amp_ptt * carrier[:half]
+    distal[half:] = amp_conf * carrier[half:]
+    distal += rng.normal(0, 0.03, win_len).astype(np.float32)
+    proximal = carrier + rng.normal(0, 0.03, win_len).astype(np.float32)
+
+    bp = a * ptt_ms + b + float(rng.normal(0, 1.5))
+    return LinearBPSample(
+        proximal=proximal.astype(np.float32), distal=distal.astype(np.float32),
+        bp=bp, ptt_ms=ptt_ms, confound=confound, scenario=scenario,
+    )
+
+
+def build_linear_bp_dataset(
+    n: int, scenario: str, confound_corr: float, seed: int
+) -> list[LinearBPSample]:
+    rng = np.random.default_rng(seed)
+    return [
+        generate_linear_bp_sample(rng, scenario, confound_corr) for _ in range(n)
+    ]
+
+
+def linear_bp_to_tensors(samples: list[LinearBPSample]) -> dict:
+    return {
+        "stream_a": np.stack([s.proximal for s in samples]),
+        "stream_b": np.stack([s.distal for s in samples]),
+        "target": np.array([s.bp for s in samples], dtype=np.float32),
+        "ptt_ms": np.array([s.ptt_ms for s in samples], dtype=np.float32),
+        "confound": np.array([s.confound for s in samples], dtype=np.float32),
+        "answerable": np.ones(len(samples), dtype=int),
+        "scenario": [s.scenario for s in samples],
+    }
+
+
+def _readout_head(model: nn.Module, ctx: np.ndarray, device: torch.device) -> np.ndarray:
+    """Push context vectors through the model's own output head."""
+    with torch.no_grad():
+        tensor = torch.from_numpy(ctx.astype(np.float32)).to(device)
+        return model.output(tensor).squeeze(-1).cpu().numpy()
+
+
+def _partialled_directions(
+    ctx: np.ndarray, primary: np.ndarray, nuisance: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Directions that move one decoded quantity while holding the other fixed.
+
+    In-distribution, PTT and the confound are correlated, so a probe fit to PTT
+    alone points partly along the confound.  Fitting a joint probe
+    ``ctx -> [PTT, confound]`` and taking the minimum-norm step that raises the
+    decoded PTT by one unit *while holding the decoded confound constant*
+    isolates the genuine PTT pathway (and vice versa).  This is what makes the
+    causal test distinguish a PTT-using model from an amplitude shortcut.
+    """
+    targets = np.stack([primary, nuisance], axis=1)
+    probe = Ridge(alpha=1.0).fit(ctx, targets)
+    weight = probe.coef_.reshape(2, -1)  # (2, d)
+    gram = weight @ weight.T + 1e-6 * np.eye(2)
+    pseudo = weight.T @ np.linalg.inv(gram)  # (d, 2); columns solve W s = e_i
+    return pseudo[:, 0].astype(np.float32), pseudo[:, 1].astype(np.float32)
+
+
+def _slope_along_direction(
+    model: nn.Module,
+    ctx: np.ndarray,
+    direction: np.ndarray,
+    device: torch.device,
+    deltas: tuple[float, ...],
+) -> float:
+    """Mean change in the model's BP head per unit step along ``direction``."""
+    base = _readout_head(model, ctx, device)
+    slopes = []
+    for delta in deltas:
+        moved = _readout_head(model, ctx + delta * direction[None, :], device)
+        slopes.append((moved - base) / delta)
+    return float(np.mean(slopes))
+
+
+def measure_causal_fidelity(
+    model: nn.Module,
+    probe_data: dict,
+    device: torch.device,
+    a: float,
+    seed: int,
+    deltas: tuple[float, ...] = (-2.0, -1.0, 1.0, 2.0),
+) -> dict:
+    """Causal fidelity = recovered BP/PTT slope divided by the true constant a.
+
+    ``probe_data`` should be a *decorrelated* set (PTT independent of the
+    confound) so the PTT and confound directions are identifiable; on correlated
+    in-distribution data the two directions collapse together and the partialled
+    intervention becomes ill-conditioned.  The random-direction control is scaled
+    to the same raw activation step as the PTT intervention, so it isolates
+    *direction* rather than perturbation size.
+    """
+    evaluation = evaluate_regressor(model, probe_data, device, batch_size=128)
+    ctx = evaluation["activation"]
+    ptt_direction, confound_direction = _partialled_directions(
+        ctx, probe_data["ptt_ms"], probe_data["confound"]
+    )
+    ptt_slope = _slope_along_direction(model, ctx, ptt_direction, device, deltas)
+    confound_slope = _slope_along_direction(model, ctx, confound_direction, device, deltas)
+
+    rng = np.random.default_rng(seed + 7)
+    unit = rng.normal(size=ctx.shape[1]).astype(np.float32)
+    unit /= np.linalg.norm(unit) + 1e-8
+    unit *= np.linalg.norm(ptt_direction)  # match the raw step size of the PTT probe
+    random_slope = _slope_along_direction(model, ctx, unit, device, deltas)
+    return {
+        "ptt_causal_slope": ptt_slope,
+        "ptt_causal_fidelity": float(ptt_slope / a),
+        "confound_causal_slope": confound_slope,
+        "random_direction_slope": random_slope,
+    }
+
+
+@dataclass
+class CausalBPConfig:
+    n_train: int = 320
+    n_eval: int = 200
+    n_ood: int = 200
+    epochs: int = 200
+    batch_size: int = 64
+    width: int = 64
+    a: float = LINEAR_BP_A
+    confound_corrs: tuple[float, ...] = (0.0, 0.5, 0.8, 0.95, 0.99)
+    seeds: tuple[int, ...] = (0, 1, 2)
+
+
+def run_causal_bp_audit(cfg: CausalBPConfig, device: torch.device) -> dict:
+    """Sweep confound strength; relate causal fidelity to out-of-distribution risk."""
+    records = []
+    for confound_corr in cfg.confound_corrs:
+        for seed in cfg.seeds:
+            base_seed = seed * 1000 + int(round(confound_corr * 100))
+            train = linear_bp_to_tensors(
+                build_linear_bp_dataset(cfg.n_train, "train", confound_corr, base_seed + 1)
+            )
+            eval_id = linear_bp_to_tensors(
+                build_linear_bp_dataset(cfg.n_eval, "clean", confound_corr, base_seed + 2)
+            )
+            ood = linear_bp_to_tensors(
+                build_linear_bp_dataset(cfg.n_ood, "ood", confound_corr, base_seed + 3)
+            )
+            # Decorrelated set (PTT independent of confound) for identifiable
+            # causal directions; kept separate from the OOD evaluation draw.
+            probe = linear_bp_to_tensors(
+                build_linear_bp_dataset(cfg.n_ood, "ood", confound_corr, base_seed + 4)
+            )
+            model = TwoStreamCrossAttention(WIN_LEN, cfg.width)
+            train_regressor(model, train, device, cfg.epochs, cfg.batch_size)
+            id_eval = evaluate_regressor(model, eval_id, device, cfg.batch_size)
+            ood_eval = evaluate_regressor(model, ood, device, cfg.batch_size)
+            fidelity = measure_causal_fidelity(model, probe, device, cfg.a, base_seed)
+            records.append({
+                "confound_corr": float(confound_corr),
+                "seed": int(seed),
+                "in_distribution_mae": float(np.mean(id_eval["loss"])),
+                "ood_mae": float(np.mean(ood_eval["loss"])),
+                **fidelity,
+            })
+            del model
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+    return {"config": vars(cfg), "records": records, "decision": _causal_bp_decision(records)}
+
+
+def _causal_bp_decision(records: list[dict]) -> dict:
+    fidelity = np.array([r["ptt_causal_fidelity"] for r in records])
+    ood = np.array([r["ood_mae"] for r in records])
+    id_mae = np.array([r["in_distribution_mae"] for r in records])
+    corr = np.array([r["confound_corr"] for r in records])
+    random_slope = np.array([r["random_direction_slope"] for r in records])
+    a = LINEAR_BP_A
+
+    def pearson(x: np.ndarray, y: np.ndarray) -> float:
+        if len(x) < 2 or np.std(x) < 1e-9 or np.std(y) < 1e-9:
+            return float("nan")
+        return float(np.corrcoef(x, y)[0, 1])
+
+    fidelity_ood_corr = pearson(fidelity, ood)
+    confound_ood_corr = pearson(corr, ood)
+    return {
+        "fidelity_vs_ood_pearson": fidelity_ood_corr,
+        "confound_vs_ood_pearson": confound_ood_corr,
+        "confound_vs_id_pearson": pearson(corr, id_mae),
+        "mean_in_distribution_mae": float(np.mean(id_mae)),
+        "mean_ood_mae": float(np.mean(ood)),
+        "mean_random_direction_fidelity": float(np.mean(random_slope) / a),
+        "fidelity_predicts_ood_failure": bool(
+            np.isfinite(fidelity_ood_corr) and fidelity_ood_corr < 0
+        ),
+        "shortcut_reliance_raises_ood": bool(
+            np.isfinite(confound_ood_corr) and confound_ood_corr > 0
+        ),
+        "in_distribution_accuracy_hides_failure": bool(
+            np.mean(id_mae) < 0.75 * np.mean(ood)
+        ),
+        "random_direction_is_null": bool(abs(float(np.mean(random_slope) / a)) < 0.2),
+    }
+
+
+def plot_causal_bp(report: dict, output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    records = report["records"]
+    fidelity = np.array([r["ptt_causal_fidelity"] for r in records])
+    ood = np.array([r["ood_mae"] for r in records])
+    id_mae = np.array([r["in_distribution_mae"] for r in records])
+    corr = np.array([r["confound_corr"] for r in records])
+
+    fig, ax = plt.subplots(figsize=(6, 4.5))
+    scatter = ax.scatter(fidelity, ood, c=corr, cmap="viridis", s=60, edgecolor="k")
+    ax.set_xlabel("PTT causal fidelity  (recovered slope / true a)")
+    ax.set_ylabel("Out-of-distribution MAE (mmHg)")
+    ax.set_title("Causal fidelity predicts OOD failure")
+    ax.axvline(1.0, ls="--", color="gray", lw=1, label="ideal fidelity = 1")
+    ax.axvline(0.0, ls=":", color="crimson", lw=1, label="no causal use of PTT")
+    ax.legend(loc="upper right", fontsize=8)
+    fig.colorbar(scatter, ax=ax, label="train confound correlation")
+    fig.tight_layout()
+    fig.savefig(output_dir / "causal_fidelity_vs_ood.png", dpi=180)
+    plt.close(fig)
+
+    order = np.argsort(corr)
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.plot(corr[order], id_mae[order], "o-", label="In-distribution MAE")
+    ax.plot(corr[order], ood[order], "s-", label="Out-of-distribution MAE")
+    ax.set_xlabel("Train confound correlation (z vs PTT)")
+    ax.set_ylabel("MAE (mmHg)")
+    ax.set_title("Accuracy is blind to the shortcut; OOD is not")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_dir / "causal_bp_accuracy_gap.png", dpi=180)
+    plt.close(fig)
+
+
+def export_causal_bp(report: dict, output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "claim": (
+            "A model is trustworthy for BP = a * PTT only if intervening on its "
+            "internal PTT representation shifts its BP output by the physical "
+            "slope a.  Causal fidelity, computed without test labels, predicts "
+            "out-of-distribution failure that in-distribution accuracy hides."
+        ),
+        "governing_law": "BP = a * PTT + b;  a = %.3f mmHg/ms" % LINEAR_BP_A,
+        "limitations": [
+            "Synthetic two-stream pulse simulator; not clinical waveforms.",
+            "Confound is a controlled amplitude shortcut, not all real spurious cues.",
+            "Causal fidelity uses a linear PTT subspace; nonlinear mediation is out of scope.",
+            "Do not use for clinical decision-making.",
+        ],
+        "report": report,
+    }
+    path = output_dir / "causal_bp_summary.json"
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(_json_ready(payload), handle, indent=2)
+    plot_causal_bp(report, output_dir)
+    return path
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--output-dir", type=Path, default=Path("results/physics_credibility"))
@@ -1284,6 +1613,12 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument("--mk-lr", type=float, default=3e-3)
+    p.add_argument(
+        "--experiment",
+        choices=["laws", "causal_bp", "all"],
+        default="all",
+        help="Run the incompleteness law audits, the causal-mediation BP audit, or both.",
+    )
     p.add_argument("--quick", action="store_true")
     return p.parse_args()
 
@@ -1300,16 +1635,37 @@ def main() -> None:
             epochs=min(args.epochs, 5), n_bootstrap=3,
         )
         mk_epochs = min(mk_epochs, 5)
-    reports = []
-    for seed in args.seeds:
-        print(f"[physics] seed={seed} device={device}", flush=True)
-        cfg = LawAuditConfig(seed=seed, **cfg_kwargs)
-        mk_cfg = replace(cfg, epochs=mk_epochs, lr=mk_lr)
-        reports.append(run_beer_audit(cfg, device))
-        reports.append(run_mk_audit(mk_cfg, device))
-    config = {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()}
-    path = export_summary(reports, args.output_dir, config)
-    print(f"[physics] wrote {path}", flush=True)
+
+    if args.experiment in ("laws", "all"):
+        reports = []
+        for seed in args.seeds:
+            print(f"[physics] seed={seed} device={device}", flush=True)
+            cfg = LawAuditConfig(seed=seed, **cfg_kwargs)
+            mk_cfg = replace(cfg, epochs=mk_epochs, lr=mk_lr)
+            reports.append(run_beer_audit(cfg, device))
+            reports.append(run_mk_audit(mk_cfg, device))
+        config = {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()}
+        path = export_summary(reports, args.output_dir, config)
+        print(f"[physics] wrote {path}", flush=True)
+
+    if args.experiment in ("causal_bp", "all"):
+        if args.quick:
+            causal_cfg = CausalBPConfig(
+                n_train=64, n_eval=48, n_ood=48,
+                epochs=min(args.epochs, 5),
+                confound_corrs=(0.0, 0.95), seeds=(0,),
+            )
+        else:
+            causal_cfg = CausalBPConfig(seeds=tuple(args.seeds[:2]) or (0, 1))
+        print(f"[causal-bp] device={device} corrs={causal_cfg.confound_corrs}", flush=True)
+        causal_report = run_causal_bp_audit(causal_cfg, device)
+        causal_path = export_causal_bp(causal_report, args.output_dir / "causal_bp")
+        print(f"[causal-bp] wrote {causal_path}", flush=True)
+        print(
+            "[causal-bp] decision: "
+            + json.dumps(causal_report["decision"], indent=2),
+            flush=True,
+        )
 
 
 if __name__ == "__main__":
