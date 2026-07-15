@@ -88,7 +88,7 @@ def risk_coverage_curve(
 def area_under_risk_coverage(losses: np.ndarray, confidence: np.ndarray) -> float:
     coverage, risk = risk_coverage_curve(losses, confidence)
     # Include coverage=0 with the first retained-example risk.
-    return float(np.trapz(np.r_[risk[0], risk], np.r_[0.0, coverage]))
+    return float(np.trapezoid(np.r_[risk[0], risk], np.r_[0.0, coverage]))
 
 
 def risks_at_coverages(

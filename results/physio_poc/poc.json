@@ -1,0 +1,117 @@
+{
+  "config": {
+    "output_dir": "results/physio_poc",
+    "laws": [
+      "beer_lambert",
+      "moens_korteweg"
+    ],
+    "seeds": [
+      0,
+      1,
+      2
+    ],
+    "n_ensemble": 6,
+    "n_train": 4000,
+    "n_probe": 800,
+    "n_test": 1000,
+    "hidden": 64,
+    "epochs": 300,
+    "quick": false
+  },
+  "results": {
+    "beer_lambert": {
+      "detection": {
+        "missing_ir": {
+          "probe": {
+            "mean": 1.0,
+            "std": 0.0
+          },
+          "ensemble": {
+            "mean": 1.0,
+            "std": 0.0
+          },
+          "mahalanobis": {
+            "mean": 1.0,
+            "std": 0.0
+          }
+        },
+        "saturated_ir": {
+          "probe": {
+            "mean": 0.020166666666666666,
+            "std": 0.019477907713327136
+          },
+          "ensemble": {
+            "mean": 0.45974200000000004,
+            "std": 0.09317282385259486
+          },
+          "mahalanobis": {
+            "mean": 1.0,
+            "std": 0.0
+          }
+        },
+        "mismatched_ir": {
+          "probe": {
+            "mean": 0.5038771666666667,
+            "std": 0.007398559255392597
+          },
+          "ensemble": {
+            "mean": 0.7302533333333333,
+            "std": 0.0006443923925339182
+          },
+          "mahalanobis": {
+            "mean": 0.746979,
+            "std": 0.010321916617889686
+          }
+        }
+      },
+      "clean_mae": 0.41081051031748456
+    },
+    "moens_korteweg": {
+      "detection": {
+        "missing_cal": {
+          "probe": {
+            "mean": 1.0,
+            "std": 0.0
+          },
+          "ensemble": {
+            "mean": 0.9940146666666667,
+            "std": 0.007097447678958638
+          },
+          "mahalanobis": {
+            "mean": 1.0,
+            "std": 0.0
+          }
+        },
+        "distorted_cal": {
+          "probe": {
+            "mean": 1.0,
+            "std": 0.0
+          },
+          "ensemble": {
+            "mean": 0.9413206666666666,
+            "std": 0.034966240121325924
+          },
+          "mahalanobis": {
+            "mean": 1.0,
+            "std": 0.0
+          }
+        },
+        "wrong_subject": {
+          "probe": {
+            "mean": 0.7007713333333333,
+            "std": 0.027821661483855023
+          },
+          "ensemble": {
+            "mean": 0.7798916666666668,
+            "std": 0.01332966011903119
+          },
+          "mahalanobis": {
+            "mean": 0.7943863333333333,
+            "std": 0.00395032018392883
+          }
+        }
+      },
+      "clean_mae": 2.76183811823527
+    }
+  }
+}

@@ -16,6 +16,7 @@ if str(ANALYSIS) not in sys.path:
 
 from physics_law_credibility import (  # noqa: E402
     BEER_SCENARIOS_TEST,
+    MK_FS,
     MK_SCENARIOS_TEST,
     LawAuditConfig,
     _moens_korteweg_pwv,
@@ -26,6 +27,7 @@ from physics_law_credibility import (  # noqa: E402
     generate_beer_lambert_sample,
     generate_moens_korteweg_sample,
     intervene_activation,
+    paired_significance,
     probe_direction,
     random_direction,
     run_beer_audit,
@@ -52,6 +54,31 @@ class PhysicsLawCredibilityTests(unittest.TestCase):
         self.assertGreater(high.ratio_r, 0)
         self.assertGreater(low.ratio_r, 0)
 
+    def test_beer_ratio_carries_spo2_signal(self) -> None:
+        # Regression test for the exponent-underflow bug: mu*path_length
+        # used to reach ~20-30, driving exp(-(dc+ac)) below the additive
+        # motion-noise floor so ratio_R was statistically independent of
+        # SpO2 (|corr| ~ 0.03). Guard against that silently coming back.
+        rng = np.random.default_rng(0)
+        samples = [generate_beer_lambert_sample(rng, "clean") for _ in range(500)]
+        ratio_r = np.array([s.ratio_r for s in samples])
+        spo2 = np.array([s.spo2 for s in samples])
+        corr = np.corrcoef(ratio_r, spo2)[0, 1]
+        self.assertLess(abs(corr), 1.0)
+        self.assertGreater(abs(corr), 0.5)
+
+    def test_mk_shift_resolves_ptt_range(self) -> None:
+        # Regression test for the FS=25Hz bug: at a 40ms sample period, the
+        # whole 5-43ms physiological PTT range rounded to exactly 1 sample
+        # for every example, so the distal waveform's time-shift carried no
+        # BP information regardless of the true value.
+        rng = np.random.default_rng(0)
+        samples = [generate_moens_korteweg_sample(rng, "clean") for _ in range(200)]
+        shift_samples = np.array(
+            [round(s.ptt_ms * MK_FS / 1000.0) for s in samples]
+        )
+        self.assertGreater(len(np.unique(shift_samples)), 5)
+
     def test_mk_pwv_units_and_ptt_ms(self) -> None:
         pwv = _moens_korteweg_pwv(1.0e6, 0.0005, 1060.0, 0.004)
         self.assertGreater(pwv, 0)
@@ -62,6 +89,33 @@ class PhysicsLawCredibilityTests(unittest.TestCase):
         rng = np.random.default_rng(2)
         sample = generate_moens_korteweg_sample(rng, "missing_stiffness_cal")
         self.assertFalse(sample.answerable)
+
+    def test_mk_calibration_vector_matches_answerability(self) -> None:
+        rng = np.random.default_rng(3)
+        clean = generate_moens_korteweg_sample(rng, "clean")
+        missing_path = generate_moens_korteweg_sample(rng, "missing_path_length")
+        missing_cal = generate_moens_korteweg_sample(rng, "missing_stiffness_cal")
+        self.assertTrue(clean.answerable)
+        self.assertTrue(np.any(clean.calibration != 0))
+        self.assertEqual(clean.calibration[-1], 1.0)
+        for sample in (missing_path, missing_cal):
+            self.assertFalse(sample.answerable)
+            np.testing.assert_array_equal(sample.calibration, np.zeros(4, dtype=np.float32))
+
+    def test_mk_calibration_recovers_bp_given_true_lag(self) -> None:
+        # Given a perfect PTT read-out (from classical cross-correlation, not
+        # the network) plus the calibration vector, BP should be recoverable
+        # via the closed-form inversion this benchmark's identifiability
+        # claim rests on: PWV^2 = K*exp(alpha*BP/100).
+        rng = np.random.default_rng(4)
+        errors = []
+        for _ in range(50):
+            s = generate_moens_korteweg_sample(rng, "clean")
+            path_m, k_scaled, alpha, _avail = s.calibration
+            pwv = path_m / (s.ptt_ms / 1000.0)
+            bp_pred = (100.0 / alpha) * np.log((pwv ** 2) / (k_scaled * 100.0))
+            errors.append(abs(bp_pred - s.bp))
+        self.assertLess(np.mean(errors), 1e-2)
 
     def test_matched_scenario_counts(self) -> None:
         beer = build_beer_dataset(5, BEER_SCENARIOS_TEST, seed=0)
@@ -101,6 +155,22 @@ class PhysicsLawCredibilityTests(unittest.TestCase):
         report = run_beer_audit(cfg, torch.device("cpu"))
         self.assertEqual(report["law"], "beer_lambert")
         self.assertIn("cross_attention", report["models"])
+
+    def test_paired_significance_detects_consistent_gap(self) -> None:
+        rng = np.random.default_rng(0)
+        a = 1.0 + rng.normal(0, 0.05, 10)
+        b = 1.5 + rng.normal(0, 0.05, 10)
+        result = paired_significance(a, b, seed=0)
+        self.assertTrue(result["significant"])
+        self.assertLess(result["ci_high"], 0)
+        self.assertLess(result["wilcoxon_p"], 0.05)
+
+    def test_paired_significance_rejects_noise(self) -> None:
+        rng = np.random.default_rng(1)
+        a = 1.0 + rng.normal(0, 1.0, 6)
+        b = 1.0 + rng.normal(0, 1.0, 6)
+        result = paired_significance(a, b, seed=0)
+        self.assertFalse(result["significant"])
 
     def test_export_summary_schema(self) -> None:
         import torch

@@ -89,10 +89,114 @@ the physics simulators alone.
 
 Report negative/mixed results directly.
 
+### Cross-law transfer
+
+```bash
+python analysis/cross_law_transfer.py
+```
+
+Trains a compact answerability signature on one law and evaluates it
+zero-shot on the other, testing whether the "I cannot answer" signal is
+domain-general. Result: a sharp, reproducible asymmetry (Moens–Korteweg →
+Beer–Lambert transfers, Beer–Lambert → Moens–Korteweg does not) — evidence
+for a domain-general *mechanism*, not a domain-general *direction*.
+
+### Identifiability toy model (γ sweep)
+
+```bash
+python analysis/toy_identifiability.py
+python analysis/toy_identifiability.py --quick
+```
+
+A minimal linear inverse problem where the identifiability gap γ is dialed
+exactly. Its headline finding: at *matched* γ, an input-visible ("zeroed")
+corruption is detected and gating captures ~85–90% of the oracle benefit,
+while an in-distribution ("resampled") corruption of identical error
+magnitude is undetectable and gating gains nothing — even at γ = 171.
+**Detectability tracks input-visibility, not error size.** Output:
+`results/toy_identifiability/toy_gating.png` (four panels, including the
+canonical risk–coverage "the model restrains itself" curve).
+
+**Reproduce it in one notebook:** `analysis/identifiability_toy_model.ipynb`
+runs the whole thing top to bottom (~2 min, CPU) with a plain-language
+explanation of each step.
+
+Geometry of the answerability signal:
+
+```bash
+python analysis/toy_geometry.py
+```
+
+Asks *how* "unanswerable" is arranged in activation space: it is
+approximately low-rank — one dominant "answerability axis" carries ~88% of
+the detection, with a tail smeared over roughly the corrupted-block
+dimensionality (`results/toy_identifiability/toy_geometry.png`).
+
+Can an ensemble break the single-pass ceiling?
+
+```bash
+python analysis/toy_ensemble.py
+```
+
+Pits three detectors (single-pass probe, label-free ensemble disagreement,
+label-free Mahalanobis OOD) against three corruptions. Ensembles/OOD **do**
+catch a large off-manifold corruption the probe misses (label-free), but
+every detector has a blind spot and **nothing** catches an on-manifold
+corruption — the boundary is data-manifold membership, not the number of
+forward passes (`results/toy_identifiability/toy_ensemble.png`).
+
+### Physics-grounded gating proof of concept
+
+```bash
+python analysis/physio_gating_poc.py
+```
+
+The clean toy-task design instantiated on two *real governing laws*
+(Beer–Lambert → SpO₂, Moens–Korteweg → BP). Trains a model on the law,
+freezes it, and gates on a linear probe of its activations. Produces, per
+law, a risk–coverage curve (the model restraining itself: probe hugs the
+oracle, far below random) and a "who catches which failure" panel across
+three clinical failure modes — missing channel, saturated/distorted channel,
+and a plausible-but-mismatched channel. Outputs under `results/physio_poc/`.
+**Reproduce and read it in one notebook:**
+`analysis/physio_gating_proposal.ipynb` (proposal-ready, ~3 min, CPU).
+
+### Model auditing: decoding PTT from a model's activations
+
+```bash
+python analysis/ptt_gate.py
+```
+
+A model-certification demo. A model maps pulse waveforms (+ calibration) to
+blood pressure; we check whether it encodes the physically-required
+pulse-transit-time (PTT) — **using only synthetic waveforms, no access to the
+model's original training data**. Two per-input gates on the frozen model:
+
+- **threshold** — is the decoded PTT in physiological range? (catches gross
+  failures; here it catches *nothing* — the model always decodes a plausible
+  in-range PTT even when wrong)
+- **consistency** — does the decoded PTT (from activations) match the PTT
+  *measured directly from the raw signal* (cross-correlation)? This catches
+  the failures the threshold misses.
+
+Result: PTT decodes at R² ≈ 1.0 on clean data; the consistency gate catches a
+missing distal channel (AUROC 1.00) and a novel pulse morphology the model
+misreads (0.86), but **not** a wrong-subject calibration (0.51) — because the
+waveform PTT is genuinely correct there, so the failure is a non-observable
+identifiability problem, not a PTT-competence one. Output:
+`results/ptt_gate/ptt_gate.png`.
+
 Unit tests:
 
 ```bash
 python -m unittest discover -s tests -p 'test_*.py'
 ```
 
-See also `analysis/PHYSICS_ABSTENTION.md` for extended notes.
+### Further reading
+
+- `analysis/SUMMARY.md` — structured, honest write-up of method, theory,
+  and frozen results (including the missingness-shortcut limitation).
+- `analysis/THEORY.md` — the identifiability-gap (γ) mechanism and its
+  empirical checks.
+- `analysis/dashboard.html` — interactive multi-panel results dashboard.
+- `analysis/PHYSICS_ABSTENTION.md` — extended notes.
