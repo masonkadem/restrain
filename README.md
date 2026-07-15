@@ -153,7 +153,9 @@ Outputs under `results/causal_mediation_toy/<law>/`:
   the forward computation and exactly where each audit reads (`h`) or intervenes.
 
 Precise formulation of the task, architecture, models, and each audit:
-`analysis/CAUSAL_AUDIT_MATH.md`.
+`analysis/CAUSAL_AUDIT_MATH.md`. Concise walkthrough notebook (abstract BP →
+BP simulator → SpO₂): `analysis/causal_audit_walkthrough.ipynb`. **Remaining
+work and the real-data plan:** `analysis/NEXT_STEPS.md`.
 
 Unit tests:
 

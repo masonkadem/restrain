@@ -7,3 +7,10 @@ venv/
 *.pt
 *.pth
 wandb/
+
+# large datasets — keep out of git (commit only a tiny data/sample/)
+data/
+!data/sample/
+*.h5
+*.hdf5
+*.parquet
