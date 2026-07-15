@@ -186,6 +186,74 @@ waveform PTT is genuinely correct there, so the failure is a non-observable
 identifiability problem, not a PTT-competence one. Output:
 `results/ptt_gate/ptt_gate.png`.
 
+## 3. Causal-use audit toy (encoding vs. causal use)
+
+```bash
+python analysis/causal_mediation_toy.py --law blood_pressure --quick
+python analysis/causal_mediation_toy.py --law saturation --quick
+```
+
+A minimal, self-contained demonstration that *decodability is not trust*. Two
+governing laws are supported, each with a two-component structure where the
+answer is only determined when **both** components are used:
+
+- `blood_pressure` — `BP = P₀ + S·[2 ln(L/PTT) − ln(E₀/E_ref)]` (Moens–Korteweg:
+  pulse transit time **PTT** plus a per-subject arterial-stiffness calibration
+  **E₀**). Uncalibrated PTT does not determine BP — the textbook cuffless-BP
+  failure mode.
+- `saturation` — `y = v_i / (v_i + v_j)` (Beer–Lambert-flavored ratio).
+
+A two-query cross-attention retriever names slots `i` and `j`, retrieves their
+values into separate subspaces, and predicts the answer. Two models share the
+same architecture and task: the **law** model is trained where component `j`
+(the calibration) varies; the **shortcut** model is trained where `j` is
+effectively constant, so reading `i` alone predicts the answer — the everyday
+failure of a confounded or narrow training set (a cuffless-BP model fit on a
+cohort with similar arterial stiffness).
+
+**Three models** share the architecture and task (see the table below). On the
+validation distribution a practitioner actually has (`j` barely varies) all three
+are indistinguishable — and *this is the point* (blood-pressure law, `--quick`,
+3 seeds, mean):
+
+| check | law | unfaithful | shortcut | separates law? |
+|-------|-----|-----------|----------|----------------|
+| validation MSE (`j`≈const) | ~0 | ~0 | ~0 | no |
+| decodability probe R² | ~0.99 | ~0.9 | ~0.9 | no |
+| uses `j`? gradient magnitude `[0-1]` | ~1.0 | ~1.0 | ~0.0 | **no** (misses unfaithful) |
+| **interchange-intervention accuracy** | **~0.99** | **~−0.55** | **~0.18** | **yes** |
+| OOD MSE, revealed after (`j` varies) | ~0 | ~0.70 | ~0.17 | **yes** |
+
+- **law** — trained with `j` varying → uses both components (true law).
+- **unfaithful** — trained on a *wrong-form* law of `j` (for BP, the calibration
+  term with the wrong sign) → it *does* use `j` (nonzero, correct-magnitude
+  gradient) but implements the wrong equation.
+- **shortcut** — trained with `j` fixed → ignores `j`.
+
+Predictive error, a decodability probe, and even a gradient-*magnitude*
+sensitivity check all fail to separate the faithful model from the unfaithful
+one. Only the **interchange-intervention audit** (a DAS-style alignment search:
+is there a subspace of the internal state that, swapped between two inputs,
+transfers the answer as the equation predicts?) isolates the law model — and the
+held-out `j`-varying error, revealed only afterward, confirms it. The equation
+is the oracle (evaluated at known component values); no measured OOD label is
+used to reach the verdict.
+
+Outputs under `results/causal_mediation_toy/<law>/`:
+
+- `causal_mediation.png` — six panels: task schematic, indistinguishable
+  in-distribution fit, OOD reveal, counterfactual response curve, interchange
+  accuracy vs. subspace dimension (with seed error bars), and a scorecard
+  showing the conventional checks agreeing while the audits separate.
+- `metrics.json` — per-metric mean ± s.d. over seeds.
+- `../audit_map.png` (from `python analysis/audit_map.py`) — precise diagram of
+  the forward computation and exactly where each audit reads (`h`) or intervenes.
+
+Precise formulation of the task, architecture, models, and each audit:
+`analysis/CAUSAL_AUDIT_MATH.md`. Concise walkthrough notebook (abstract BP →
+BP simulator → SpO₂): `analysis/causal_audit_walkthrough.ipynb`. **Remaining
+work and the real-data plan:** `analysis/NEXT_STEPS.md`.
+
 Unit tests:
 
 ```bash

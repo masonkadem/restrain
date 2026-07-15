@@ -1,0 +1,84 @@
+{
+  "metrics": {
+    "law": {
+      "val_indist_mse": {
+        "mean": 0.006966840099873177,
+        "std": 0.009733181452159942
+      },
+      "ood_mse": {
+        "mean": 0.006327738306329896,
+        "std": 0.008818339738951304
+      },
+      "probe_r2_indist": {
+        "mean": 0.6795190771420797,
+        "std": 0.4486130833611365
+      },
+      "uses_j_score": {
+        "mean": 0.9752521323067466,
+        "std": 0.018780092895751485
+      },
+      "interchange_accuracy_peak": {
+        "mean": 0.8224476279247296,
+        "std": 0.2462916252266716
+      }
+    },
+    "unfaithful": {
+      "val_indist_mse": {
+        "mean": 9.025311010191217e-05,
+        "std": 2.9245264659864197e-06
+      },
+      "ood_mse": {
+        "mean": 0.05790294830997785,
+        "std": 0.0025237940744203993
+      },
+      "probe_r2_indist": {
+        "mean": 0.99955948193868,
+        "std": 0.0002124301196317537
+      },
+      "uses_j_score": {
+        "mean": 0.9169675906838056,
+        "std": 0.008193922855799923
+      },
+      "interchange_accuracy_peak": {
+        "mean": 0.04380331898615464,
+        "std": 0.022297154999951233
+      }
+    },
+    "shortcut": {
+      "val_indist_mse": {
+        "mean": 2.377693454036489e-05,
+        "std": 5.664674339348542e-07
+      },
+      "ood_mse": {
+        "mean": 0.014898492644230524,
+        "std": 0.000627857491216709
+      },
+      "probe_r2_indist": {
+        "mean": 0.9984928170839945,
+        "std": 0.0002323157347890806
+      },
+      "uses_j_score": {
+        "mean": 0.005531759189851715,
+        "std": 0.0005490542277261064
+      },
+      "interchange_accuracy_peak": {
+        "mean": 0.5489689724453338,
+        "std": 0.016319424571343596
+      }
+    }
+  },
+  "config": {
+    "law": "saturation",
+    "output_dir": "results/causal_mediation_toy/saturation",
+    "device": "cpu",
+    "n_train": 2000,
+    "n_eval": 600,
+    "n_slots": 8,
+    "epochs": 600,
+    "width": 48,
+    "das_steps": 250,
+    "seeds": 3,
+    "quick": true,
+    "from_cache": false
+  }
+}
