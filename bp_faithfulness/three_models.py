@@ -22,8 +22,18 @@ from bpf import analysis as A
 from bpf.config import load_config, seed_everything
 from bpf.dataset import generate_dataset, subject_split
 
-SHADE = {"faithful": "#1a1a1a", "unfaithful": "#7b7b7b", "shortcut": "#c0c0c0"}
+matplotlib.rcParams.update({
+    "font.family": "sans-serif", "font.sans-serif": ["DejaVu Sans"],
+    "font.size": 10.5, "axes.titlesize": 11.5, "axes.labelsize": 10.5,
+    "axes.edgecolor": "#3a3a3a", "axes.linewidth": 0.9,
+    "xtick.color": "#3a3a3a", "ytick.color": "#3a3a3a",
+    "xtick.labelsize": 9.5, "ytick.labelsize": 9.5,
+    "axes.spines.top": False, "axes.spines.right": False, "figure.dpi": 180,
+})
+SHADE = {"faithful": "#2f4b7c", "unfaithful": "#c1543b", "shortcut": "#9aa0a6"}
 MARK = {"faithful": "o", "unfaithful": "s", "shortcut": "^"}
+INK, MUT, WIRE = "#22262b", "#8b8b8b", "#33383d"
+PROX, DIST = "#33475c", "#8199b0"
 clip = lambda v: float(np.clip(v, 0, 1))
 
 
@@ -52,7 +62,7 @@ def evaluate(cfg, regime, seed):
 def zig(ax, x0, x1, y, n=6, h=0.02):
     xs = np.linspace(x0, x1, 2 * n + 1); ys = np.full_like(xs, y)
     ys[1:-1:2] += h; ys[2:-1:2] -= h
-    ax.plot(xs, ys, color="#1a1a1a", lw=1.2)
+    ax.plot(xs, ys, color="#33383d", lw=1.2)
 
 
 def draw_circuit(ax):
@@ -65,31 +75,31 @@ def draw_circuit(ax):
     # transmission line (tube)
     ax.add_patch(Rectangle((0.16, 0.55), 0.34, 0.10, fill=False, lw=1.3))
     ax.text(0.33, 0.60, "uniform elastic tube\nZc,  one-way delay T", ha="center", va="center", fontsize=8)
-    ax.plot([0.095, 0.16], [0.6, 0.6], color="#1a1a1a", lw=1.2)
+    ax.plot([0.095, 0.16], [0.6, 0.6], color="#33383d", lw=1.2)
     # 3-element Windkessel load: R1 series, then R2 || C to ground
-    ax.plot([0.50, 0.56], [0.6, 0.6], color="#1a1a1a", lw=1.2)
+    ax.plot([0.50, 0.56], [0.6, 0.6], color="#33383d", lw=1.2)
     zig(ax, 0.56, 0.68, 0.6); ax.text(0.62, 0.66, "R1", ha="center", fontsize=8)
-    ax.plot([0.68, 0.74], [0.6, 0.6], color="#1a1a1a", lw=1.2)
+    ax.plot([0.68, 0.74], [0.6, 0.6], color="#33383d", lw=1.2)
     # node -> two parallel branches down to ground
-    ax.plot([0.74, 0.74], [0.6, 0.72], color="#1a1a1a", lw=1.2)  # up to R2 branch
+    ax.plot([0.74, 0.74], [0.6, 0.72], color="#33383d", lw=1.2)  # up to R2 branch
     zig(ax, 0.74, 0.86, 0.72); ax.text(0.80, 0.78, "R2", ha="center", fontsize=8)
-    ax.plot([0.86, 0.86], [0.72, 0.30], color="#1a1a1a", lw=1.2)
-    ax.plot([0.74, 0.74], [0.6, 0.48], color="#1a1a1a", lw=1.2)   # down to C branch
-    ax.plot([0.705, 0.775], [0.48, 0.48], color="#1a1a1a", lw=1.6)  # cap plate
-    ax.plot([0.715, 0.765], [0.455, 0.455], color="#1a1a1a", lw=1.6)
+    ax.plot([0.86, 0.86], [0.72, 0.30], color="#33383d", lw=1.2)
+    ax.plot([0.74, 0.74], [0.6, 0.48], color="#33383d", lw=1.2)   # down to C branch
+    ax.plot([0.705, 0.775], [0.48, 0.48], color="#33383d", lw=1.6)  # cap plate
+    ax.plot([0.715, 0.765], [0.455, 0.455], color="#33383d", lw=1.6)
     ax.text(0.80, 0.47, "C", ha="center", fontsize=8)
-    ax.plot([0.74, 0.74], [0.455, 0.30], color="#1a1a1a", lw=1.2)
-    ax.plot([0.66, 0.94], [0.30, 0.30], color="#1a1a1a", lw=1.2)  # ground rail
+    ax.plot([0.74, 0.74], [0.455, 0.30], color="#33383d", lw=1.2)
+    ax.plot([0.66, 0.94], [0.30, 0.30], color="#33383d", lw=1.2)  # ground rail
     for gx in (0.74, 0.86):
-        ax.plot([gx, gx], [0.30, 0.30], color="#1a1a1a")
-    ax.plot([0.78, 0.82], [0.26, 0.26], color="#1a1a1a", lw=1.2)
-    ax.plot([0.795, 0.805], [0.23, 0.23], color="#1a1a1a", lw=1.2)
+        ax.plot([gx, gx], [0.30, 0.30], color="#33383d")
+    ax.plot([0.78, 0.82], [0.26, 0.26], color="#33383d", lw=1.2)
+    ax.plot([0.795, 0.805], [0.23, 0.23], color="#33383d", lw=1.2)
     ax.text(0.80, 0.34, "3-element Windkessel load  Z_L", ha="center", fontsize=7.5)
     # measurement points
-    ax.plot([0.16], [0.55], marker="v", color="#3a6ea5", ms=8)
-    ax.text(0.16, 0.50, "proximal", color="#3a6ea5", ha="center", fontsize=7.5)
-    ax.plot([0.50], [0.55], marker="v", color="#b04a3a", ms=8)
-    ax.text(0.50, 0.50, "distal", color="#b04a3a", ha="center", fontsize=7.5)
+    ax.plot([0.16], [0.55], marker="v", color="#33475c", ms=8)
+    ax.text(0.16, 0.50, "proximal", color="#33475c", ha="center", fontsize=7.5)
+    ax.plot([0.50], [0.55], marker="v", color="#8199b0", ms=8)
+    ax.text(0.50, 0.50, "distal", color="#8199b0", ha="center", fontsize=7.5)
     ax.text(0.5, 0.14,
             r"$\Gamma=\dfrac{Z_L-Z_c}{Z_L+Z_c}$    "
             r"$H(f)=\dfrac{(1+\Gamma)e^{-j2\pi fT}}{1+\Gamma e^{-j4\pi fT}}$",
@@ -126,46 +136,56 @@ def main():
         rows[3]: clip(R[r]["sign"]),
     } for r in R}
 
-    fig, ax = plt.subplots(1, 3, figsize=(17, 5.2), gridspec_kw={"width_ratios": [1.1, 1, 1.2]})
+    fig, ax = plt.subplots(1, 3, figsize=(17.5, 5.4), gridspec_kw={"width_ratios": [1.1, 1, 1.35]})
+    fig.subplots_adjust(left=0.01, right=0.99, top=0.80, bottom=0.16, wspace=0.28)
     draw_circuit(ax[0])
 
-    # counterfactual: donor-swap shift vs physics for each model
+    # ---- counterfactual: donor-swap shift vs physics ----
     b = ax[1]
-    b.axhline(0, color="#999", lw=.6); b.axvline(0, color="#999", lw=.6)
-    for r in R:
-        b.scatter(R[r]["x"], R[r]["shift"], s=7, color=SHADE[r], alpha=.5,
+    b.axhline(0, color="#d0d0d0", lw=1); b.axvline(0, color="#d0d0d0", lw=1)
+    for r in ("shortcut", "unfaithful", "faithful"):
+        b.scatter(R[r]["x"], R[r]["shift"], s=13, color=SHADE[r], alpha=.55,
                   edgecolor="none", label=r)
-    b.set_xlabel("physics  Δ(1/T)  donor − base"); b.set_ylabel("predicted SBP shift")
-    b.set_title("Donor-swap: does the output move as physics says?", fontsize=10, fontweight="bold")
-    b.legend(frameon=False, fontsize=8)
-    for s in ("top", "right"):
-        b.spines[s].set_visible(False)
+    b.set_xlabel("physics  Δ(1/T)   donor − base"); b.set_ylabel("predicted SBP shift")
+    b.set_title("Donor-swap: does the output move\nas physics predicts?", loc="left",
+                fontweight="bold", pad=10)
+    b.legend(frameon=False, fontsize=9, loc="upper left")
 
+    # ---- scorecard (dumbbell), matched to the Act-1 hero ----
     c = ax[2]
-    ys = np.arange(len(rows))[::-1]; off = {"faithful": 0.16, "unfaithful": 0.0, "shortcut": -0.16}
+    short = {rows[0]: "agree", rows[1]: "misses unfaithful",
+             rows[2]: "misses unfaithful", rows[3]: "SEPARATES"}
+    label = {rows[0]: "validation accuracy", rows[1]: "probe R²  (decodability)",
+             rows[2]: 'gradient  ("uses PTT?")', rows[3]: "interchange audit  (causal)"}
+    ys = np.arange(len(rows))[::-1]
     for y, row in zip(ys, rows):
-        c.axhspan(y - 0.5, y + 0.5, color="#eef3ee" if row == rows[-1] else "#f6f6f4", zorder=0)
+        is_audit = row == rows[-1]
+        if is_audit:
+            c.axhspan(y - 0.5, y + 0.5, color="#eef1f6", zorder=0)
+        vals = [score[r][row] for r in R]
+        c.plot([min(vals), max(vals)], [y, y], color="#d7d7d7", lw=2.2, zorder=1,
+               solid_capstyle="round")
         for r in R:
-            c.scatter(score[r][row], y + off[r], s=85, marker=MARK[r], color=SHADE[r],
-                      edgecolor="#1a1a1a", lw=.5, zorder=3)
-        c.text(-0.03, y, row, ha="right", va="center", fontsize=8.8)
-        sep = row == rows[-1]
-        c.text(1.03, y, verdict[row], ha="left", va="center", fontsize=7.6,
-               fontweight="bold" if sep else "normal", color="#1a1a1a" if sep else "#8a8a86")
-    c.set_xlim(-0.03, 1.03); c.set_ylim(-0.6, len(rows) - .4); c.set_yticks([])
-    c.set_xlabel("looks faithful  (0 → 1)")
-    c.set_title("Only the causal audit separates the three models", fontsize=10, fontweight="bold")
-    for s in ("top", "right", "left"):
-        c.spines[s].set_visible(False)
-    handles = [plt.Line2D([], [], marker=MARK[r], ls="none", color=SHADE[r], mec="#1a1a1a",
-                          ms=8, label=r) for r in R]
-    c.legend(handles=handles, loc="lower center", ncol=3, frameon=False, bbox_to_anchor=(0.5, -0.28))
+            c.scatter(score[r][row], y, s=150, marker=MARK[r], color=SHADE[r],
+                      edgecolor="white", linewidth=1.3, zorder=3)
+        c.text(-0.02, y, label[row], ha="right", va="center", fontsize=10)
+        c.text(1.06, y, short[row], ha="left", va="center",
+               fontsize=9.5 if is_audit else 9, fontweight="bold" if is_audit else "normal",
+               color=SHADE["faithful"] if is_audit else MUT)
+    c.set_xlim(-0.02, 1.45); c.set_ylim(-0.6, len(rows) - .35); c.set_yticks([])
+    c.set_xticks([0, 0.5, 1.0]); c.set_xlabel("looks faithful   (0  →  1)")
+    c.spines["left"].set_visible(False)
+    c.set_title("Conventional checks can't separate them —\nthe causal audit can", loc="left",
+                fontweight="bold", pad=10)
+    handles = [plt.Line2D([], [], marker=MARK[r], ls="none", color=SHADE[r], mec="white",
+                          mew=1.2, ms=11, label=r) for r in R]
+    c.legend(handles=handles, loc="lower center", ncol=3, frameon=False,
+             bbox_to_anchor=(0.34, -0.26), handletextpad=0.4, columnspacing=1.6)
 
-    fig.suptitle("Act 2 — tube-load BP simulator: same three-model story as the abstract task",
-                 x=0.01, ha="left", fontsize=12.5, fontweight="bold")
-    fig.tight_layout(rect=(0, 0.02, 1, 0.95))
+    fig.suptitle("Act 2 — tube-load BP simulator: the same three-model story on real waveforms",
+                 x=0.01, ha="left", fontsize=13.5, fontweight="bold")
     out = Path(cfg["paths"]["results_dir"]); out.mkdir(exist_ok=True)
-    fig.savefig(out / "bp_three_models.png", dpi=165, bbox_inches="tight")
+    fig.savefig(out / "bp_three_models.png", bbox_inches="tight")
     print(f"wrote {out}/bp_three_models.png")
 
 
