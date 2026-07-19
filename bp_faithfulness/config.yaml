@@ -1,0 +1,53 @@
+# Single source of truth. The sweep READS thresholds from here so they are
+# pre-registered, not tuned after seeing results.
+seed: 0
+
+simulator:
+  fs: 250                 # Hz
+  hr_bpm: 66              # nominal heart rate
+  seg_beats: 2           # beats per training sample
+  T_range_s: [0.10, 0.22]  # transit-time range (drives BP)
+  gamma: 0.0             # reflection coefficient (shortcut / null-branch knob)
+  pep_sd_ms: 0.0         # pre-ejection-period jitter sd (recoverability knob)
+  noise_sd: 0.02         # additive observation noise (fraction of pulse amplitude)
+  confound_bp: 8.0      # mmHg sd of the non-T ("vascular tone") BP driver z
+  confound_gain: 1.0     # how strongly z is injected into distal morphology, per unit gamma
+
+subjects:
+  n: 8                   # subjects
+  samples_per_subject: 90
+  amp_jitter: 0.15       # per-subject waveform amplitude nuisance (from l, A)
+  # Nearly-shared T->BP mapping across subjects (small spread), so absolute BP is
+  # learnable under leave-one-subject-out WITHOUT per-subject calibration. Wide
+  # subject-specific K's would recreate the real calibration problem (same T,
+  # different BP) and there would be no true-positive regime to probe.
+  K1_sys: [8.5, 9.5]     # SBP = K1/T + K2 [mmHg]
+  K2_sys: [52, 58]
+  K1_dia: [4.0, 4.6]     # DBP = K1/T + K2
+  K2_dia: [33, 37]
+
+model:
+  d_model: 48
+  heads: 2
+  conv_stride: 8
+  epochs: 60
+  lr: 2.0e-3
+  batch: 128
+
+probe:
+  ridge_alpha: 1.0
+  r2_significance: 0.20  # PRE-REGISTERED: probe "fires" only if R2 exceeds this AND beats shuffle
+  n_bootstrap: 500
+
+conformal:
+  target_coverage: 0.90  # PRE-REGISTERED
+  burn_in: 25            # per-subject labelled calibration beats
+
+sweep:
+  gamma_grid: [0.0, 0.2, 0.4, 0.6, 0.8]
+  pep_sd_grid_ms: [0, 10, 20, 40]
+  seeds: [0, 1]
+  train_subjects: 6      # subject-level split for sweep speed (main model uses full LOSO)
+
+paths:
+  results_dir: results
