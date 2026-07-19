@@ -8,6 +8,25 @@ from a known physics model, we control ground truth and can demonstrate both
 negatives** (it stops firing when PTT is unrecoverable). *A verification method
 that always fires is not a verification method.*
 
+## Start here: the three-act story
+
+The clearest entry point is **`walkthrough.ipynb`** (concise, executed) and two
+figures that tell the *same* story in two settings:
+
+- **Act 1 — abstract** (`../results/causal_mediation_toy/hero.png`, built by
+  `analysis/make_hero_figure.py`): three models — **faithful / unfaithful /
+  shortcut** — where validation accuracy, a linear probe, and gradient sensitivity
+  give the same verdict, and **only the causal audit isolates the faithful model.**
+- **Act 2 — this BP simulator** (`results/bp_three_models.png`, built by
+  `python three_models.py`): the *same* three-model contrast on realistic
+  tube-load waveforms, with the tube-load **circuit diagram**. Same punchline.
+- **Act 3 — ECG + PPG real data** (target): proximal = ECG R-wave, distal = PPG,
+  interval = **PAT = PEP + PTT**; the audit is unchanged. See `analysis/NEXT_STEPS.md`.
+
+The single sentence: *accuracy, probing, and gradient sensitivity cannot tell a
+model that uses the governing law from one that fakes it or ignores it — a causal
+swap can, and it transfers from an abstract task to realistic BP signals.*
+
 ## The physics, in plain language
 
 A pressure pulse travels down an artery and partially **reflects** off the

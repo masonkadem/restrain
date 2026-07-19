@@ -54,14 +54,26 @@ def _subject_params(rng, cfg) -> dict:
     )
 
 
-def generate_dataset(cfg, gamma=None, pep_sd_ms=None, seed=0) -> Dataset:
-    """Build a full multi-subject dataset at the given (gamma, pep) setting."""
+def generate_dataset(cfg, gamma=None, pep_sd_ms=None, seed=0,
+                     t_fixed=False, wrong_sign=False) -> Dataset:
+    """Build a full multi-subject dataset at the given (gamma, pep) setting.
+
+    Three-model regimes (aligned with the abstract Act-1 task):
+      * faithful   : defaults (T varies, true BP).
+      * shortcut   : t_fixed=True + gamma>0 -> T does not vary in training, so BP
+                     variation comes only from the reflection-morphology confound;
+                     the model has no reason to encode PTT.
+      * unfaithful : wrong_sign=True -> the T->BP relation is inverted, so the
+                     model uses PTT but the WRONG way.
+    """
     sim = cfg["simulator"]
     fs = sim["fs"]
     gamma = sim["gamma"] if gamma is None else gamma
     pep_sd = (sim["pep_sd_ms"] if pep_sd_ms is None else pep_sd_ms) / 1e3
     noise_sd, cbp, cgain = sim["noise_sd"], sim["confound_bp"], sim["confound_gain"]
     n_sub, per = cfg["subjects"]["n"], cfg["subjects"]["samples_per_subject"]
+    T_lo, T_hi = sim["T_range_s"]
+    T_mid = 0.5 * (T_lo + T_hi)
     rng = np.random.default_rng(seed)
 
     prox_all, dist_all, T_all, bp_all, sub_all, z_all = [], [], [], [], [], []
@@ -71,7 +83,7 @@ def generate_dataset(cfg, gamma=None, pep_sd_ms=None, seed=0) -> Dataset:
         L = int(round(sim["seg_beats"] * Tb * fs))
         slow = _slow_shape(L)
         for _ in range(per):
-            T = rng.uniform(*sim["T_range_s"])
+            T = T_mid if t_fixed else rng.uniform(T_lo, T_hi)   # shortcut: T does not vary
             z = rng.normal()
             sbp = sp["K1_sys"] / T + sp["K2_sys"] + cbp * z
             dbp = sp["K1_dia"] / T + sp["K2_dia"] + 0.6 * cbp * z
@@ -103,8 +115,11 @@ def generate_dataset(cfg, gamma=None, pep_sd_ms=None, seed=0) -> Dataset:
     Lmax = max(len(x) for x in prox_all)
     def stack(list_):
         return np.stack([np.pad(x, (0, Lmax - len(x))) for x in list_]).astype("float32")
+    bp = np.array(bp_all, dtype="float32")
+    if wrong_sign:                                # unfaithful: invert the T->BP relation
+        bp = (2 * bp.mean(0) - bp).astype("float32")
     return Dataset(stack(prox_all), stack(dist_all), np.array(T_all),
-                   np.array(bp_all, dtype="float32"), np.array(sub_all), np.array(z_all))
+                   bp, np.array(sub_all), np.array(z_all))
 
 
 def subject_split(ds: Dataset, train_subjects: int, seed=0):

@@ -10,7 +10,7 @@ simulator:
   gamma: 0.0             # reflection coefficient (shortcut / null-branch knob)
   pep_sd_ms: 0.0         # pre-ejection-period jitter sd (recoverability knob)
   noise_sd: 0.02         # additive observation noise (fraction of pulse amplitude)
-  confound_bp: 8.0      # mmHg sd of the non-T ("vascular tone") BP driver z
+  confound_bp: 4.0      # mmHg sd of the non-T ("vascular tone") BP driver z
   confound_gain: 1.0     # how strongly z is injected into distal morphology, per unit gamma
 
 subjects:
