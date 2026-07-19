@@ -1,20 +1,24 @@
-"""Small BP-estimation model (Part 3).
+"""Small BP-estimation model (Part 3): a compact position-preserving 1D-CNN.
 
-We use a compact 2-channel 1D-CNN. The proximal and distal waveforms enter as two
-channels, so the very first convolution sees BOTH and can form cross-channel
-(delay/alignment) features -- which is where PTT information lives -- and later
-layers build morphology features. Global average pooling gives the audited
-representation `h`; a small MLP head maps `h` to [SBP, DBP]. A few hundred
-thousand parameters.
+Design note (kept honest, it is a finding):
+  We tried a small from-scratch TRANSFORMER (the natural mech-interp substrate).
+  At this data scale (~500 training samples) it did not fit the task -- probe R2
+  for the true intermediate stayed at chance and BP MAE stayed at mean-prediction
+  -- while this CNN learns it cleanly (probe R2 ~ 0.9). Transformers are
+  data-hungry; a physiological-scale toy is not where they shine. Crucially, the
+  faithfulness battery does NOT depend on the architecture: probing, causal
+  ablation, donor-swap activation patching and input saliency all operate on
+  `represent()` / `from_h()` and the raw inputs. So we use the CNN and keep the
+  audit architecture-agnostic.
 
-(An earlier cross-attention variant is thematically appealing -- "PTT alignment
-lives in cross-attention" -- but did not reliably fit even the training set at
-this scale; T is linearly decodable from the raw signals, so a CNN learns it
-robustly. The faithfulness probe below is architecture-agnostic: it only needs
-`represent()` and `from_h()`.)
+The 2-channel input means the first conv sees BOTH proximal and distal, so it can
+form cross-channel (delay/alignment == PTT) features; flattening (rather than
+global pooling) preserves position so a delay is representable. `h` is the pooled
+representation we audit.
 """
 from __future__ import annotations
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -27,18 +31,14 @@ class BPModel(nn.Module):
             nn.Conv1d(32, 48, 7, stride=4, padding=3), nn.ReLU(),
             nn.Conv1d(48, 48, 7, stride=2, padding=3), nn.ReLU(),
         )
-        # flatten (KEEP time) -> linear: preserves position, so a delay (PTT) is
-        # representable. Global pooling would be translation-invariant and would
-        # throw the delay away.
-        self.proj = nn.LazyLinear(d_model)
+        self.proj = nn.LazyLinear(d_model)          # flatten keeps position -> delay learnable
         self.norm = nn.LayerNorm(d_model)
         self.head = nn.Sequential(nn.Linear(d_model, 64), nn.ReLU(), nn.Linear(64, 2))
         self.d_model = d_model
 
     def represent(self, prox, dist):
-        """Audited representation h (batch, d_model)."""
         x = torch.stack([prox, dist], dim=1)        # (B, 2, L) -- both channels together
-        feat = self.body(x)                         # (B, C, L')
+        feat = self.body(x)
         return self.norm(self.proj(feat.flatten(1)))
 
     def forward(self, prox, dist, return_h=False):
@@ -47,5 +47,12 @@ class BPModel(nn.Module):
         return (pred, h) if return_h else pred
 
     def from_h(self, h):
-        """Run only the head on a (possibly edited) representation (ablation/patching)."""
         return self.head(h)
+
+    def saliency(self, prox, dist):
+        """Mean |d SBP / d input| over the batch, per time-step, per channel.
+        A model relying on PTT concentrates saliency near the two feet."""
+        p = torch.tensor(prox, requires_grad=True)
+        d = torch.tensor(dist, requires_grad=True)
+        self.forward(p, d)[:, 0].sum().backward()
+        return np.abs(p.grad.numpy()).mean(0), np.abs(d.grad.numpy()).mean(0)

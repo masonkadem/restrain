@@ -92,12 +92,42 @@ streamlit run app.py                          # interactive sandbox
 foot-to-foot vs T, probe-fires, ablation, donor-swap, Γ sweep, PEP sweep,
 per-subject MAE), plus `demo_results.npz` and `summary.json`.
 
-## What the headline figure shows
+## Modeling note (a finding, kept honest)
 
-- **True positive** (Γ=0, PEP=0): probe R² ≈ 0.9, well above the shuffle floor;
-  donor-swap sign accuracy ≈ 90%.
-- **PEP sweep** (Γ=0): probe R² collapses toward 0 and abstention rises as PEP
-  grows — the recoverability collapse.
-- **Γ sweep** (PEP=0): probe R² stays high (Γ is *not* a recoverability knob) while
-  BP MAE falls as the model exploits the reflection shortcut — a controlled
-  negative for the recoverability hypothesis and a window on the null branch.
+We first tried a small **from-scratch transformer** — the natural mech-interp
+substrate. At this data scale (~500 training samples) it did not fit the task
+(probe R² for the true intermediate stayed at chance, BP MAE stayed at
+mean-prediction), while a compact **1D-CNN** learns it cleanly (probe R² ≈ 0.9).
+Transformers are data-hungry; a physiological-scale toy is not where they shine.
+Crucially the faithfulness battery is **architecture-agnostic** — probing, causal
+ablation, donor-swap patching, and input saliency all operate on `represent()` /
+`from_h()` and the raw inputs — so we use the CNN and keep the audit general.
+
+## PAT vs PTT (which intermediate to probe)
+
+- **ECG + PPG** model → the observable interval is **PAT = PEP + PTT** (ECG R-peak
+  to distal foot). PEP is a confound, so PAT is a *noisy* proxy of the BP-relevant
+  PTT. The proximal marker in the simulator, jittered by PEP, plays exactly this
+  ECG-R-wave role — so the **PEP knob is the PAT→PTT confound**.
+- **PPG + PPG** (two optical sites) → the observable is **PTT** directly (no PEP).
+
+## The self-explaining figure (`results/comprehensive.png`)
+
+Six panels; each carries a plain-language point and a one-line pseudocode of what
+it computes:
+
+- **A** the two-channel input (proximal marker + distal PPG).
+- **B** the probe **fires** at Γ=0, PEP=0 (R² ≈ 0.9 vs a near-zero shuffle floor).
+- **C** the **causal** donor-swap: patching the PTT direction shifts BP with the
+  sign physics predicts (~90%).
+- **D** the **benchmark** — the PEP recoverability sweep: as PEP hides PTT, the
+  probe correctly stops firing (discriminant validity; *a method that always
+  fires is not a verification method*).
+- **E** BP MAE over the same sweep (rises here → accuracy depends on PTT; a *flat*
+  MAE while D collapses would flag the null branch).
+- **F** input saliency concentrating at the upstroke feet (the PTT landmarks).
+
+`config.yaml` also exposes Γ (the reflection/shortcut knob) and a `--`sweep over
+it; Γ is deliberately **not** the recoverability knob (foot-based PTT is
+reflection-robust, see the identifiability argument above), so it serves as a
+controlled negative.

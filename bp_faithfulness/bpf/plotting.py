@@ -1,4 +1,5 @@
-"""Comprehensive multi-panel figure (Part 5 headline + Part 4 diagnostics)."""
+"""Simplified, self-explaining figure. Six panels; every panel carries a one-line
+plain-language point AND a tiny pseudocode of exactly what it computes."""
 from __future__ import annotations
 
 import matplotlib
@@ -7,91 +8,92 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-INK, MUT, ACC = "#1a1a1a", "#7b7b7b", "#b04a3a"
+INK, MUT, ACC, BLU, GRN = "#1a1a1a", "#8a8a8a", "#b04a3a", "#3a6ea5", "#4a7a4a"
 
 
-def _clean(ax):
+def _fmt(ax, title, point, code):
+    # title (bold) and plain-language point stacked ABOVE the axes; pseudocode below
+    ax.text(0.0, 1.17, title, transform=ax.transAxes, fontsize=9.3, fontweight="bold", va="bottom")
+    ax.text(0.0, 1.04, point, transform=ax.transAxes, fontsize=7.3, color="#555",
+            va="bottom", style="italic")
+    ax.text(0.0, -0.34, code, transform=ax.transAxes, fontsize=6.7, color=MUT,
+            family="monospace", va="top")
     for s in ("top", "right"):
         ax.spines[s].set_visible(False)
 
 
 def make_figure(R, path):
-    plt.rcParams.update({"font.size": 8.5, "axes.titlesize": 9, "axes.linewidth": 0.8})
-    fig, ax = plt.subplots(2, 4, figsize=(16, 8))
+    plt.rcParams.update({"font.size": 8.5})
+    fig, ax = plt.subplots(2, 3, figsize=(15, 9.6))
 
-    # A. example waveform pair
+    # --- A: waveform pair + PAT = PTT + PEP ---
     a = ax[0, 0]; t = np.arange(len(R["ex_prox"])) / R["fs"]
-    a.plot(t, R["ex_prox"], color=INK, lw=1.2, label="proximal")
-    a.plot(t, R["ex_dist"], color=MUT, lw=1.2, label="distal")
-    a.set_title("A  Simulated waveform pair"); a.set_xlabel("time (s)"); a.set_ylabel("pressure")
-    a.legend(frameon=False, fontsize=7.5); _clean(a)
+    a.plot(t, R["ex_prox"], color=INK, lw=1.1, label="proximal (ECG-like marker)")
+    a.plot(t, R["ex_dist"], color=BLU, lw=1.1, label="distal (PPG)")
+    a.set_xlabel("time (s)"); a.set_ylabel("pressure"); a.legend(fontsize=6.8, frameon=False)
+    _fmt(a, "A  What the model sees",
+         "two channels; the proximal->distal lag carries PAT = PTT + PEP",
+         "distal = tube_load(prox, T, gamma)   # first arrival at T")
 
-    # B. foot-to-foot vs true T (physics: foot ~ T, reflection-robust)
+    # --- B: probe fires (true positive) ---
     b = ax[0, 1]
-    b.plot(R["T_grid"] * 1e3, R["T_grid"] * 1e3, "--", color=MUT, lw=1, label="identity")
-    b.plot(R["T_grid"] * 1e3, R["ftf_g0"] * 1e3, "-o", color=INK, ms=3, label="γ=0")
-    b.plot(R["T_grid"] * 1e3, R["ftf_g08"] * 1e3, "-s", color=ACC, ms=3, label="γ=0.8")
-    b.set_title("B  Foot-to-foot ≈ T (reflection-robust)")
-    b.set_xlabel("true T (ms)"); b.set_ylabel("foot-to-foot (ms)")
-    b.legend(frameon=False, fontsize=7.5); _clean(b)
-
-    # C. probe R2 vs shuffle floor (true positive), with bootstrap CI + threshold
-    c = ax[0, 2]
     r2, lo, hi = R["probe_r2"], R["probe_ci"][0], R["probe_ci"][1]
-    c.bar([0], [r2], color=INK, width=0.5, yerr=[[r2 - lo], [hi - r2]], capsize=4)
-    c.bar([1], [R["probe_shuffle"]], color=MUT, width=0.5)
-    c.axhline(R["r2_threshold"], color=ACC, ls=":", lw=1)
-    c.text(1.5, R["r2_threshold"], " pre-registered\n threshold", color=ACC, va="center", fontsize=7)
-    c.set_xticks([0, 1]); c.set_xticklabels(["probe\n(true T)", "shuffle\ncontrol"])
-    c.set_ylabel("R²"); c.set_title("C  Probe fires (γ=0, PEP=0)"); _clean(c)
+    b.bar([0], [r2], width=.5, color=INK, yerr=[[r2 - lo], [hi - r2]], capsize=4)
+    b.bar([1], [R["probe_shuffle"]], width=.5, color=MUT)
+    b.axhline(R["r2_threshold"], color=ACC, ls=":", lw=1)
+    b.set_xticks([0, 1]); b.set_xticklabels(["probe\n(true T)", "shuffle"])
+    b.set_ylabel("R²"); b.set_ylim(min(-0.2, R["probe_shuffle"] - .05), 1.0)
+    _fmt(b, "B  Probe fires  (gamma=0, PEP=0)",
+         "T is decodable from activations, far above the shuffle floor",
+         "R2 = fit Ridge(h -> true_T); fire if R2 > thr and > shuffle")
 
-    # D. causal ablation
-    d = ax[0, 3]
-    d.bar([0, 1], [R["mae_intact"], R["mae_ablated"]], color=[INK, ACC], width=0.5)
-    d.set_xticks([0, 1]); d.set_xticklabels(["intact", "PTT dir\nablated"])
-    d.set_ylabel("BP MAE (mmHg)")
-    d.set_title(f"D  Ablation Δ={R['mae_ablated']-R['mae_intact']:+.2f} mmHg"); _clean(d)
-
-    # E. donor-swap patching: predicted shift vs physics sign
-    e = ax[1, 0]
+    # --- C: causal checks ---
+    c = ax[0, 2]
     x = np.array(R["donor_x"]); s = np.array(R["donor_shift"])
-    e.axhline(0, color=MUT, lw=0.6); e.axvline(0, color=MUT, lw=0.6)
-    e.scatter(x, s, s=6, color=INK, alpha=0.4, edgecolor="none")
-    e.set_xlabel("physics Δ(1/T) donor−base"); e.set_ylabel("predicted SBP shift")
-    e.set_title(f"E  Donor swap: sign acc {R['donor_sign']:.0%}"); _clean(e)
+    c.axhline(0, color=MUT, lw=.5); c.axvline(0, color=MUT, lw=.5)
+    c.scatter(x, s, s=6, color=INK, alpha=.4, edgecolor="none")
+    c.set_xlabel("physics  Δ(1/T)  donor − base"); c.set_ylabel("predicted SBP shift")
+    _fmt(c, f"C  Causal check: donor-swap  ({R['donor_sign']:.0%} sign)",
+         "patch the PTT direction from a donor -> BP moves as physics predicts",
+         "h_patch = h + proj_w(h_donor - h);  shift = head(h_patch) - head(h)")
 
-    # F. gamma sweep
-    _sweep_panel(ax[1, 1], R["gamma_x"], R["gamma_r2"], R["gamma_shuf"], R["gamma_mae"],
-                 R["gamma_abst"], "F  γ sweep (PEP=0): recoverability knob?", "reflection γ")
-    # G. pep sweep
-    _sweep_panel(ax[1, 2], R["pep_x"], R["pep_r2"], R["pep_shuf"], R["pep_mae"],
-                 R["pep_abst"], "G  PEP sweep (γ=0): the collapse", "PEP sd (ms)")
+    # --- D: THE BENCHMARK -- PEP sweep, do the methods agree? ---
+    d = ax[1, 0]
+    px = np.array(R["pep_x"])
+    d.axvspan(px.min(), px.min() + (px.max() - px.min()) * 0.33, color=GRN, alpha=.06)
+    d.axvspan(px.max() - (px.max() - px.min()) * 0.33, px.max(), color=ACC, alpha=.06)
+    d.plot(px, R["pep_r2"], "-o", color=INK, ms=4, label="probe R²")
+    d.plot(px, R["pep_donor"], "-s", color=ACC, ms=4, label="donor sign acc")
+    d.plot(px, R["pep_abst"], "-^", color=BLU, ms=4, label="abstention")
+    d.set_ylim(-0.1, 1.05); d.set_xlabel("PEP jitter sd (ms)")
+    d.set_ylabel("audit verdict (0–1)"); d.legend(fontsize=6.8, frameon=False, loc="center left")
+    d.text(px.min(), 1.02, "PTT encoded", color=GRN, fontsize=6.8)
+    d.text(px.max(), 1.02, "unrecoverable", color=ACC, fontsize=6.8, ha="right")
+    _fmt(d, "D  BENCHMARK: recoverability sweep (PEP)",
+         "as PEP hides PTT, every audit correctly stops firing -> discriminant validity",
+         "for pep: retrain; run all audits; do verdicts track known ground truth?")
 
-    # H. per-subject MAE
-    h = ax[1, 3]
-    subs = list(R["per_subject_mae"].keys())
-    h.bar(range(len(subs)), [R["per_subject_mae"][s] for s in subs], color=MUT, width=0.6)
-    h.axhline(R["mae_intact"], color=INK, ls="--", lw=1, label="overall")
-    h.set_xlabel("held-out subject"); h.set_ylabel("BP MAE (mmHg)")
-    h.set_title("H  Per-subject MAE (LOSO)"); h.legend(frameon=False, fontsize=7.5); _clean(h)
+    # --- E: BP MAE across the same sweep (is it the null branch?) ---
+    e = ax[1, 1]
+    e.plot(px, R["pep_mae"], "-s", color=BLU, ms=4)
+    e.set_xlabel("PEP jitter sd (ms)"); e.set_ylabel("BP MAE (mmHg)")
+    _fmt(e, "E  BP error over the same sweep",
+         "MAE rises with PEP: here accuracy DEPENDS on PTT (not the null branch)",
+         "MAE flat while D collapses would flag: accurate WITHOUT encoding PTT")
+
+    # --- F: saliency -- where in the waveform the model looks ---
+    f = ax[1, 2]
+    ts = np.arange(len(R["sal_prox"])) / R["fs"]
+    f.plot(ts, R["sal_prox"] / R["sal_prox"].max(), color=INK, lw=1, label="proximal")
+    f.plot(ts, R["sal_dist"] / R["sal_dist"].max(), color=BLU, lw=1, label="distal")
+    f.set_xlabel("time (s)"); f.set_ylabel("|d SBP / d input| (norm.)")
+    f.legend(fontsize=6.8, frameon=False)
+    _fmt(f, "F  Where the model looks (saliency)",
+         "reliance concentrates at the upstroke feet -- the PTT timing landmarks",
+         "saliency = |grad(SBP_pred wrt input)|, averaged over samples")
 
     fig.suptitle("Faithfulness verification for cuffless BP: does the model encode PTT?",
-                 x=0.01, ha="left", fontsize=12, fontweight="bold")
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
+                 x=0.01, ha="left", fontsize=12.5, fontweight="bold")
+    fig.subplots_adjust(left=0.06, right=0.98, top=0.90, bottom=0.08, hspace=0.95, wspace=0.28)
     fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
-
-
-def _sweep_panel(ax, x, r2, shuf, mae, abst, title, xlabel):
-    x = np.array(x)
-    ax.plot(x, r2, "-o", color=INK, ms=4, label="probe R²")
-    ax.plot(x, shuf, "-o", color=MUT, ms=3, label="shuffle")
-    ax.plot(x, abst, "-^", color=ACC, ms=4, label="abstention")
-    ax.set_ylim(-0.15, 1.05); ax.set_xlabel(xlabel); ax.set_ylabel("R² / abstention rate")
-    ax.set_title(title); _clean(ax)
-    tw = ax.twinx()
-    tw.plot(x, mae, "-s", color="#3a6ea5", ms=4, label="BP MAE")
-    tw.set_ylabel("BP MAE (mmHg)", color="#3a6ea5")
-    tw.tick_params(axis="y", colors="#3a6ea5")
-    lines = ax.get_lines() + tw.get_lines()
-    ax.legend(lines, [l.get_label() for l in lines], frameon=False, fontsize=6.8, loc="center left")

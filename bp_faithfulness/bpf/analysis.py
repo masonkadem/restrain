@@ -170,24 +170,30 @@ def conformal_abstention(model, ds, test_idx, direction, cfg):
 # One setting = one point in the sweep
 # --------------------------------------------------------------------------- #
 def run_setting(cfg, gamma, pep_sd_ms, seed):
+    """One sweep point: train, then run every audit method (so we can compare
+    whether the methods AGREE on the verdict -- the discriminant-validity test)."""
     ds = generate_dataset(cfg, gamma=gamma, pep_sd_ms=pep_sd_ms, seed=seed)
     tr, te = subject_split(ds, cfg["sweep"]["train_subjects"], seed=seed)
     model = train_model(ds, tr, cfg, seed=seed)
     mae, _ = mae_per_subject(model, ds, te)
     pr = probe_T(model, ds, tr, te, cfg)
+    ab = ablation(model, ds, te, pr["direction"])
+    dv = donor_swap(model, ds, te, pr["direction"], cfg)
     abst = conformal_abstention(model, ds, te, pr["direction"], cfg)
     return dict(gamma=gamma, pep=pep_sd_ms, seed=seed, mae=mae,
-                r2=pr["r2"], r2_shuffle=pr["r2_shuffle"], abstention=abst)
+                r2=pr["r2"], r2_shuffle=pr["r2_shuffle"], abstention=abst,
+                donor_sign=dv["sign_acc"], abl_delta=ab["mae_ablated"] - ab["mae_intact"])
 
 
 def run_sweep(cfg, axis):
     """axis in {'gamma','pep'}: vary one knob, hold the other at 0, average seeds."""
     grid = cfg["sweep"]["gamma_grid"] if axis == "gamma" else cfg["sweep"]["pep_sd_grid_ms"]
+    keys = ("mae", "r2", "r2_shuffle", "abstention", "donor_sign", "abl_delta")
     out = []
     for v in grid:
         rows = [run_setting(cfg, v if axis == "gamma" else 0.0,
                             v if axis == "pep" else 0.0, s) for s in cfg["sweep"]["seeds"]]
-        agg = {k: float(np.mean([r[k] for r in rows])) for k in ("mae", "r2", "r2_shuffle", "abstention")}
+        agg = {k: float(np.mean([r[k] for r in rows])) for k in keys}
         agg["std_r2"] = float(np.std([r["r2"] for r in rows]))
         agg["x"] = v
         out.append(agg)
