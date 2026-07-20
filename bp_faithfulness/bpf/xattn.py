@@ -95,14 +95,20 @@ class BPModelHybrid(nn.Module):
     PROXIMAL RESIDUAL, so both channels reach the readout -- plus the interpretable
     alignment map. Same represent()/from_h() API as the CNN.
 
-    STATUS (gate at gamma=0, PEP=0): with the proximal residual it LEARNS, and well
-    -- MAE ~3.5 mmHg, the best of any model here (the pure linear-patch transformer
-    and the residual-free hybrid both failed at MAE ~9). Nuance: the linear probe
-    for T comes out weak/negative while donor-swap sign is ~0.74. It appears to
-    encode 1/T (the statistic BP is LINEAR in: BP = K1/T + K2) rather than T, so a
-    linear T-probe misses it even though PTT is used causally. Reconciling the
-    probe target (T vs 1/T) and adding the attention-map figure are the next steps
-    before wiring this in.
+    STATUS (gate at gamma=0, PEP=0; see hybrid_gate.py): with the proximal residual
+    it LEARNS well -- MAE ~3.5 mmHg, best of any model here (the pure linear-patch
+    transformer and the residual-free hybrid both failed at MAE ~9).
+
+    FAITHFUL, but NONLINEARLY:
+       LINEAR  probe R^2 for T   : ~ -0.4   (fails)
+       LINEAR  probe R^2 for 1/T : ~ -0.4   (fails)
+       NONLINEAR (MLP) probe T   : ~ +0.8   (T IS there)
+       donor-swap sign           : ~ 0.74   (PTT used causally)
+    The transformer encodes PTT nonlinearly, so a LINEAR probe -- the standard
+    faithfulness check -- misses a genuinely faithful model, while a nonlinear
+    probe and the causal donor-swap both recover it. (The CNN happens to encode T
+    linearly, probe R^2 ~ 0.9.) This is a useful result in its own right: linear
+    probing can fail on a faithful model, which argues for causal/nonlinear audits.
     """
     def __init__(self, patch=16, d_model=64, heads=4, window=6):
         super().__init__()
