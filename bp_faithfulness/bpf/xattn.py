@@ -87,3 +87,64 @@ class BPModelXAttn(nn.Module):
     def attention_map(self, prox, dist):
         _, w = self._attend(prox, dist, need_w=True)                 # (B, Lq, Lk)
         return w.mean(0).cpu().numpy()
+
+
+class BPModelHybrid(nn.Module):
+    """Hybrid: a SINGLE conv layer as the patch embedder (the inductive bias that
+    makes it learn) + windowed cross-attention (proximal queries distal) with a
+    PROXIMAL RESIDUAL, so both channels reach the readout -- plus the interpretable
+    alignment map. Same represent()/from_h() API as the CNN.
+
+    STATUS (gate at gamma=0, PEP=0): with the proximal residual it LEARNS, and well
+    -- MAE ~3.5 mmHg, the best of any model here (the pure linear-patch transformer
+    and the residual-free hybrid both failed at MAE ~9). Nuance: the linear probe
+    for T comes out weak/negative while donor-swap sign is ~0.74. It appears to
+    encode 1/T (the statistic BP is LINEAR in: BP = K1/T + K2) rather than T, so a
+    linear T-probe misses it even though PTT is used causally. Reconciling the
+    probe target (T vs 1/T) and adding the attention-map figure are the next steps
+    before wiring this in.
+    """
+    def __init__(self, patch=16, d_model=64, heads=4, window=6):
+        super().__init__()
+        self.patch, self.window, self.d_model = patch, window, d_model
+        self.embed = nn.Conv1d(1, d_model, patch * 2, stride=patch, padding=patch // 2)
+        self.chan = nn.Embedding(2, d_model)
+        self.attn = nn.MultiheadAttention(d_model, heads, batch_first=True)
+        self.ff = nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, 2 * d_model),
+                                nn.GELU(), nn.Linear(2 * d_model, d_model))
+        self.proj = nn.LazyLinear(d_model)
+        self.norm = nn.LayerNorm(d_model)
+        self.head = nn.Sequential(nn.Linear(d_model, 64), nn.GELU(), nn.Linear(64, 2))
+
+    _pe = BPModelXAttn._pe
+    _band = BPModelXAttn._band
+
+    def _tokens(self, sig, ch):
+        t = self.embed(sig.unsqueeze(1)).transpose(1, 2)             # (B, n_tok, d)
+        return t + self._pe(t.shape[1], t.device) + self.chan.weight[ch]
+
+    def _attend(self, prox, dist, need_w=False):
+        P = self._tokens(prox, 0); D = self._tokens(dist, 1)
+        n = min(P.shape[1], D.shape[1]); P, D = P[:, :n], D[:, :n]
+        m = self._band(n, P.device)
+        return self.attn(P, D, D, attn_mask=m, need_weights=need_w, average_attn_weights=need_w)
+
+    def represent(self, prox, dist):
+        P = self._tokens(prox, 0); D = self._tokens(dist, 1)
+        n = min(P.shape[1], D.shape[1]); P, D = P[:, :n], D[:, :n]
+        ctx, _ = self.attn(P, D, D, attn_mask=self._band(n, P.device))
+        ctx = P + ctx                       # PROXIMAL RESIDUAL: both channels reach the readout
+        ctx = ctx + self.ff(ctx)
+        return self.norm(self.proj(ctx.flatten(1)))
+
+    def forward(self, prox, dist, return_h=False):
+        h = self.represent(prox, dist); pred = self.head(h)
+        return (pred, h) if return_h else pred
+
+    def from_h(self, h):
+        return self.head(h)
+
+    @torch.no_grad()
+    def attention_map(self, prox, dist):
+        _, w = self._attend(prox, dist, need_w=True)
+        return w.mean(0).cpu().numpy()
